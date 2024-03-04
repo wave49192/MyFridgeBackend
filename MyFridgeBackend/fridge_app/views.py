@@ -2,6 +2,9 @@ from django.shortcuts import render
 
 from django.contrib.auth.models import Group, User
 from rest_framework import permissions, viewsets
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
+
 
 from MyFridgeBackend.fridge_app.serializers import GroupSerializer, UserSerializer
 
@@ -22,3 +25,8 @@ class GroupViewSet(viewsets.ModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+@api_view(['GET'])
+def getFoodData(request):
+    foodList = {'name': 'Fried chicken', 'cookingTime': 30}
+    return Response(foodList)
