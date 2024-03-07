@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
 
-from MyFridgeBackend.fridge_app.serializers import GroupSerializer, UserSerializer
+from RecommendationSystem.serializers import GroupSerializer, UserSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
