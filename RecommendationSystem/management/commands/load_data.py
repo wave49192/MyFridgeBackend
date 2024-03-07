@@ -12,23 +12,28 @@ class Command(BaseCommand):
 
     def load_data(self):
         # Load data from recipe.csv
-        with open('recipe.csv', 'r') as csvfile:
+        with open('recipe.csv', 'r', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                recipe = Recipe.objects.create(
+                Recipe.objects.create(
                     recipe_id=row['recipe_id'],
                     title=row['title'],
                     publisher=row['publisher'],
                     image_url=row['image_url']
                 )
+
         # Load data from recipe_details.csv
-        with open('recipe_details.csv', 'r') as detailsfile:
+        with open('recipe_details.csv', 'r', encoding='utf-8') as detailsfile:
             details_reader = csv.DictReader(detailsfile)
             for detail_row in details_reader:
-                if detail_row['recipe_id'] == row['recipe_id']:
-                    RecipeDetails.objects.create(
-                        recipe=recipe,
-                        source_url=detail_row['source_url'],
-                        cooking_time=detail_row['cooking_time'],
-                        ingredients=detail_row['ingredients']
-                    )
+                RecipeDetails.objects.create(
+                    recipe_id=detail_row['recipe_id'],
+                    title=detail_row['title'],
+                    image_url=detail_row['image_url'],
+                    publisher=detail_row['publisher'],
+                    source_url=detail_row['source_url'],
+                    cooking_time=int(detail_row['cooking_time']),
+                    ingredients=detail_row['ingredients']
+                )
+
+        self.stdout.write(self.style.SUCCESS('Data loaded successfully'))
