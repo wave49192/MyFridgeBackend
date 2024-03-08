@@ -8,9 +8,9 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
 
-from RecommendationSystem.models import Recipe,RecipeDetails
+from RecommendationSystem.models import Recipe
 
-from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeDetailsSerializer
+from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -33,11 +33,11 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['GET'])
-def getRecipeDetails(request):
-    recipe_details = RecipeDetails.objects.all()
+def getRecipe(request):
+    recipes = Recipe.objects.all()
 
-    serializer = RecipeDetailsSerializer(recipe_details,many=True)
-    return Response(serializer.Data)
+    serializer = RecipeSerializer(recipes,many=True)
+    return Response(serializer.data)
 
 
 @api_view(['GET'])
@@ -47,12 +47,12 @@ def searchRecipe(request):
 
     # If a recipe name is provided, filter the recipes by name
     if recipe_name:
-        recipes = RecipeDetails.objects.filter(title__icontains=recipe_name)
+        recipes = Recipe.objects.filter(title__icontains=recipe_name)
     else:
         # If no recipe name is provided, return an error response or default data
         return Response({'error': 'Please provide a recipe name'}, status=400)
 
     # Serialize the filtered recipes using the serializer
-    serializer = RecipeDetailsSerializer(recipes, many=True)
+    serializer = RecipeSerializer(recipes, many=True)
     
     return Response(serializer.data)

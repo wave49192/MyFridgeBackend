@@ -29,8 +29,8 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include(router.urls)), 
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
-    path('recipeDetails/', views.getRecipeDetails, name ='get_recipe'),
-    path('search-recipe/', views.searchRecipe, name='search_recipe'),
+    path('recipes/', views.getRecipe, name ='get_recipe'),
+    path('recipes/search/', views.searchRecipe, name='search_recipe'),
 ]
 
 urlpatterns += router.urls

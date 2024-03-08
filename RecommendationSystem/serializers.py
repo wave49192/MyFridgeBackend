@@ -1,6 +1,6 @@
 from django.contrib.auth.models import Group, User
 from rest_framework import serializers
-from .models import Recipe, RecipeDetails
+from .models import Recipe
 
 
 class UserSerializer(serializers.HyperlinkedModelSerializer):
@@ -15,7 +15,7 @@ class GroupSerializer(serializers.HyperlinkedModelSerializer):
         fields = ['url', 'name']
         
         
-class RecipeDetailsSerializer(serializers.ModelSerializer):
+class RecipeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = RecipeDetails
+        model = Recipe
         fields = ['recipe_id', 'title','image_url', 'publisher','source_url','cooking_time','ingredients']
