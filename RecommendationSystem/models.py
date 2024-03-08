@@ -1,16 +1,9 @@
 # models.py
 from django.db import models
 
+
+
 class Recipe(models.Model):
-    recipe_id = models.CharField(max_length=100, primary_key=True)
-    title = models.CharField(max_length=255)
-    publisher = models.CharField(max_length=255)
-    image_url = models.URLField()
-
-    def __str__(self):
-        return self.title
-
-class RecipeDetails(models.Model):
     recipe_id = models.CharField(max_length=100,primary_key=True)
     title = models.CharField(max_length=255)
     image_url = models.URLField()
@@ -21,3 +14,4 @@ class RecipeDetails(models.Model):
 
     def __str__(self):
         return self.title
+
