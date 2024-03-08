@@ -1,14 +1,16 @@
 from django.shortcuts import render
-
+from django.http import JsonResponse
 from django.contrib.auth.models import Group, User
+
+
 from rest_framework import permissions, viewsets
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
-from django.http import JsonResponse
+
 from RecommendationSystem.models import Recipe,RecipeDetails
 
-from RecommendationSystem.serializers import GroupSerializer, UserSerializer
+from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeDetailsSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -27,19 +29,30 @@ class GroupViewSet(viewsets.ModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
+
+
+
 @api_view(['GET'])
-def getFoodData(request):
-    foodList = {'name': 'Fried chicken', 'cookingTime': 30}
-    return Response(foodList)
-
-def getRecipeList(request):
-    recipes = Recipe.objects.all()
-    data = [{'id':recipe.recipe_id,'title': recipe.title, 'publisher': recipe.publisher, 'image_url': recipe.image_url} for recipe in recipes]
-    return JsonResponse(data, safe=False)
-
-
-def getRecipeDetailList(request):
+def getRecipeDetails(request):
     recipe_details = RecipeDetails.objects.all()
-    data = [{'id':recipeDetail.recipe_id,'title': recipeDetail.title, 'publisher': recipeDetail.publisher, 'image_url': recipeDetail.image_url, 'source_url': recipeDetail.source_url, 'cooking_time': recipeDetail.cooking_time, 'ingredients': recipeDetail.ingredients} for recipeDetail in recipe_details]
-    return JsonResponse(data, safe=False)
+
+    serializer = RecipeDetailsSerializer(recipe_details,many=True)
+    return Response(serializer.Data)
+
+
+@api_view(['GET'])
+def searchRecipe(request):
+    # Get the recipe name from the query parameters
+    recipe_name = request.GET.get('name', '')
+
+    # If a recipe name is provided, filter the recipes by name
+    if recipe_name:
+        recipes = RecipeDetails.objects.filter(title__icontains=recipe_name)
+    else:
+        # If no recipe name is provided, return an error response or default data
+        return Response({'error': 'Please provide a recipe name'}, status=400)
+
+    # Serialize the filtered recipes using the serializer
+    serializer = RecipeDetailsSerializer(recipes, many=True)
+    
+    return Response(serializer.data)
