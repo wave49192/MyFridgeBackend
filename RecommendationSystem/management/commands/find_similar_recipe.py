@@ -42,6 +42,47 @@ recipes = [
     "Chocolate Lava Cake",
     "Eggplant Parmesan"
 ]
+recipe_cuisines = {
+    "Berry Blast Smoothie": "Smoothie",
+    "Coconut Curry Chicken": "Indian",
+    "Classic Spaghetti Bolognese": "Italian",
+    "Mango Tango Salsa": "Mexican",
+    "Cheesy Garlic Bread": "Italian",
+    "Greek Salad": "Greek",
+    "Stuffed Bell Peppers": "Mexican",
+    "Teriyaki Salmon": "Japanese",
+    "Caprese Salad": "Italian",
+    "Vegetable Stir Fry": "Chinese",
+    "Blueberry Pancakes": "American",
+    "Chicken Alfredo Pasta": "Italian",
+    "Tropical Fruit Salad": "American",
+    "Spinach and Feta Stuffed Chicken Breasts": "Mediterranean",
+    "Cajun Shrimp and Rice": "Cajun",
+    "Chocolate Chip Cookies": "American",
+    "Grilled Cheese Sandwich": "American",
+    "Chicken Caesar Salad": "American",
+    "Beef Tacos": "Mexican",
+    "Pumpkin Soup": "American",
+    "Apple Pie": "American",
+    "Lasagna": "Italian",
+    "Chicken Tikka Masala": "Indian",
+    "Guacamole": "Mexican",
+    "French Toast": "American",
+    "Creamy Mushroom Risotto": "Italian",
+    "Beef Stroganoff": "Russian",
+    "Tomato Basil Bruschetta": "Italian",
+    "Crispy Baked Chicken Wings": "American",
+    "Ratatouille": "French",
+    "Honey Mustard Glazed Salmon": "American",
+    "Shrimp Scampi": "Italian",
+    "Vegetable Lasagna": "Italian",
+    "Spicy Thai Noodles": "Thai",
+    "Lemon Garlic Roast Chicken": "Mediterranean",
+    "Beef and Broccoli Stir Fry": "Chinese",
+    "Chocolate Lava Cake": "American",
+    "Eggplant Parmesan": "Italian"
+    ,"Dog Food":"Dog",
+}
 
 ingredients = [
     ["mixed frozen berries", "natural yoghurt", "runny honey", "fresh mint"],
@@ -82,26 +123,31 @@ ingredients = [
     ["beef sirloin", "broccoli", "bell peppers", "onion", "garlic", "ginger", "soy sauce", "brown sugar", "sesame oil", "cornstarch", "rice vinegar", "salt", "black pepper"],
     ["chocolate", "butter", "sugar", "eggs", "vanilla extract", "flour", "salt"],
     ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
+    , ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
 ]
 
 # Create a vocabulary of unique ingredients
 ingredient_vocab = {ingredient: i for i, ingredient in enumerate(set([ingredient for recipe in ingredients for ingredient in recipe]))}
 
-# Function to convert ingredients to one-hot vectors
-def ingredient_to_onehot(ingredient_list):
-    onehot = torch.zeros(len(ingredient_vocab))
-    for ingredient in ingredient_list:
+# Function to convert ingredients and cuisine to one-hot vectors
+def recipe_to_onehot(recipe_name):
+    onehot_ingredient = torch.zeros(len(ingredient_vocab))
+    for ingredient in ingredients[recipes.index(recipe_name)]:
         index = ingredient_vocab[ingredient]
-        onehot[index] = 1
-    return onehot
+        onehot_ingredient[index] = 1
+    
+    onehot_cuisine = torch.zeros(len(set(recipe_cuisines.values())))
+    index = list(set(recipe_cuisines.values())).index(recipe_cuisines[recipe_name])
+    onehot_cuisine[index] = 1
+    
+    return torch.cat((onehot_ingredient, onehot_cuisine))
 
-# Convert all recipes' ingredients to one-hot vectors
-recipe_vectors = torch.stack([ingredient_to_onehot(recipe) for recipe in ingredients])
-
-# Function to find similar recipes based on cosine similarity
-def find_similar_recipes(favorite_recipe_indices, top_n=5):
+# Convert all recipes' ingredients and cuisine to one-hot vectors
+recipe_vectors = torch.stack([recipe_to_onehot(recipe) for recipe in recipes])
+# Function to find similar recipes based on ingredient similarity
+def find_similar_recipes_by_ingredients(favorite_recipe_indices, top_n=5):
     avg_recipe_vector = torch.mean(torch.stack([recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
-    similarity_scores = F.cosine_similarity(recipe_vectors, avg_recipe_vector.unsqueeze(0))
+    similarity_scores = F.cosine_similarity(recipe_vectors[:, :-len(set(recipe_cuisines.values()))], avg_recipe_vector[:-len(set(recipe_cuisines.values()))].unsqueeze(0))
     
     # Exclude favorite recipes from recommendations
     for index in favorite_recipe_indices:
@@ -110,14 +156,28 @@ def find_similar_recipes(favorite_recipe_indices, top_n=5):
     top_indices = similarity_scores.argsort(descending=True)[:top_n]
     return [(recipes[i], similarity_scores[i].item()) for i in top_indices]
 
+# Function to find similar recipes based on cuisine type similarity
+def find_similar_recipes_by_cuisine(favorite_recipe_indices, top_n=5):
+    avg_recipe_vector = torch.mean(torch.stack([recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
+    similarity_scores = F.cosine_similarity(recipe_vectors[:, -len(set(recipe_cuisines.values())):], avg_recipe_vector[-len(set(recipe_cuisines.values())):].unsqueeze(0))
+    
+    # Exclude favorite recipes from recommendations
+    for index in favorite_recipe_indices:
+        similarity_scores[index] = -1  # Set similarity score to -1 for favorite recipes
+    
+    top_indices = similarity_scores.argsort(descending=True)[:top_n]
+    return [(recipes[i], similarity_scores[i].item()) for i in top_indices]
 
-favorite_recipe_indices = [recipes.index("Coconut Curry Chicken"), recipes.index("Greek Salad")]
-similar_recipes = find_similar_recipes(favorite_recipe_indices)
+# Example usage:
+favorite_recipe_indices = [recipes.index("Eggplant Parmesan"),recipes.index("Grilled Cheese Sandwich")]
 
-print("User's Favorite Recipes:")
-for index in favorite_recipe_indices:
-    print(recipes[index])
 
-print("\nTop 5 Similar Recipes:")
-for recipe, similarity in similar_recipes:
+print("Recommendations Based on Ingredient Similarity:")
+similar_recipes_by_ingredients = find_similar_recipes_by_ingredients(favorite_recipe_indices)
+for recipe, similarity in similar_recipes_by_ingredients:
+    print(f"{recipe}: Similarity Score = {similarity:.4f}")
+
+print("\nRecommendations Based on Cuisine Type Similarity:")
+similar_recipes_by_cuisine = find_similar_recipes_by_cuisine(favorite_recipe_indices)
+for recipe, similarity in similar_recipes_by_cuisine:
     print(f"{recipe}: Similarity Score = {similarity:.4f}")
