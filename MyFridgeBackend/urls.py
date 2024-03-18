@@ -18,10 +18,13 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework import routers
 from RecommendationSystem import views
+from Inventory.views import IngredientViewSet
+from IngredientDetection.views import detectIngredients
 
 router = routers.DefaultRouter()
 router.register(r'users', views.UserViewSet)
 router.register(r'groups', views.GroupViewSet)
+router.register(r'ingredients', IngredientViewSet)
 
 # Wire up our API using automatic URL routing.
 # Additionally, we include login URLs for the browsable API.
@@ -31,6 +34,7 @@ urlpatterns = [
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     path('recipes/', views.getRecipe, name ='get_recipe'),
     path('recipes/search/', views.searchRecipe, name='search_recipe'),
+    path('detect/', detectIngredients, name='Detect Ingredients')
 ]
 
 urlpatterns += router.urls
