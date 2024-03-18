@@ -111,7 +111,7 @@ def find_similar_recipes(favorite_recipe_indices, top_n=5):
     return [(recipes[i], similarity_scores[i].item()) for i in top_indices]
 
 
-favorite_recipe_indices = [recipes.index("Coconut Curry Chicken"), recipes.index("Greek Salad")]
+favorite_recipe_indices = [recipes.index("Greek Salad")]
 similar_recipes = find_similar_recipes(favorite_recipe_indices)
 
 print("User's Favorite Recipes:")
