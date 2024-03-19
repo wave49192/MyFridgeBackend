@@ -18,4 +18,4 @@ class GroupSerializer(serializers.HyperlinkedModelSerializer):
 class RecipeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Recipe
-        fields = ['recipe_id', 'title','image_url', 'publisher','source_url','cooking_time','ingredients']
+        fields = ['recipe_id', 'title','image_url', 'publisher','source_url','cooking_time','ingredients','cuisine_type','cleaned_ingredients']
