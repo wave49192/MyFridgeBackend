@@ -12,7 +12,7 @@ class Command(BaseCommand):
 
     def load_data(self):
         # Load data from recipe_details.csv
-        with open('recipe_details.csv', 'r', encoding='utf-8') as recipesfile:
+        with open('latest_data.csv', 'r', encoding='utf-8') as recipesfile:
             recipe_reader = csv.DictReader(recipesfile)
             for recipe_row in recipe_reader:
                 Recipe.objects.create(
@@ -22,7 +22,9 @@ class Command(BaseCommand):
                     publisher=recipe_row['publisher'],
                     source_url=recipe_row['source_url'],
                     cooking_time=int(recipe_row['cooking_time']),
-                    ingredients=recipe_row['ingredients']
+                    ingredients=recipe_row['ingredients'],
+                    cuisine_type = recipe_row['cuisine_type'],
+                    cleaned_ingredients=recipe_row['cleanedIngredient']
                 )
 
         self.stdout.write(self.style.SUCCESS('Data loaded successfully'))
