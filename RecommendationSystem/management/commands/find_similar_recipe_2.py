@@ -28,35 +28,42 @@ class RecommendationSystem:
         top_10_similar_recipes = [(recipes[i]['title'], similarities[i].item()) for i in sorted_indices[:10]]
         return top_10_similar_recipes
 
-    @staticmethod
-    def find_similar_recipes_by_cuisine(favorite_recipe, recipes):
-        favorite_cuisine = favorite_recipe['cuisine_type']
-        recipe_cuisines = [recipe['cuisine_type'] for recipe in recipes]
+    # @staticmethod
+
+    # def find_similar_recipes_by_cuisine(favorite_recipes, recipes):
+    #     print(favorite_recipes)
+    #     combined_cuisines = [favorite_recipe['cuisine_type'] for favorite_recipe in favorite_recipes]
+    #     combined_cuisines = list(set(combined_cuisines))
         
-        # Create a set of unique cuisine types
-        unique_cuisines = set(recipe_cuisines)
+    #     # Initialize combined embedding tensor with the correct size
+    #     combined_embedding = torch.zeros(len(favorite_recipes), len(recipes[0]['cuisine_type']))
         
-        # Mapping from cuisine type to index in the embeddings
-        cuisine_to_index = {cuisine: i for i, cuisine in enumerate(unique_cuisines)}
+    #     # Create a mapping from cuisine type to index in the embeddings
+    #     cuisine_to_index = {cuisine: i for i, cuisine in enumerate(recipes[0]['cuisine_type'])}
         
-        favorite_embedding = torch.zeros(1, len(unique_cuisines))
-        favorite_index = cuisine_to_index.get(favorite_cuisine)
-        if favorite_index is not None:
-            favorite_embedding[0][favorite_index] = 1
+    #     for i, favorite_recipe in enumerate(favorite_recipes):
+    #         favorite_cuisine = favorite_recipe['cuisine_type']
+    #         favorite_index = cuisine_to_index.get(favorite_cuisine)
+    #         if favorite_index is not None:
+    #             combined_embedding[i][favorite_index] = 1
         
-        recipe_embeddings = torch.zeros(len(recipes), len(unique_cuisines))
-        for i, cuisine in enumerate(recipe_cuisines):
-            recipe_embeddings[i][cuisine_to_index[cuisine]] = 1
+    #     recipe_embeddings = torch.zeros(len(recipes), len(recipes[0]['cuisine_type']))
+    #     for i, recipe in enumerate(recipes):
+    #         recipe_cuisine = recipe['cuisine_type']
+    #         for j, cuisine in enumerate(recipe_cuisine):
+    #             recipe_embeddings[i][j] = 1
         
-        similarities = F.cosine_similarity(favorite_embedding, recipe_embeddings, dim=1)
+    #     # Calculate cosine similarity for each favorite recipe
+    #     similarities = F.cosine_similarity(combined_embedding.unsqueeze(1), recipe_embeddings, dim=2)
         
-        sorted_indices = torch.argsort(similarities, descending=True)
+    #     # Combine similarities for all favorite recipes
+    #     combined_similarities = torch.mean(similarities, dim=0)
         
-        favorite_recipe_index = recipes.index(favorite_recipe)
-        sorted_indices = sorted_indices[sorted_indices != favorite_recipe_index]
+    #     # Sort recipes based on combined similarity
+    #     sorted_indices = torch.argsort(combined_similarities, descending=True)
         
-        top_10_similar_recipes = [(recipes[i]['title'], similarities[i].item()) for i in sorted_indices[:10]]
-        return top_10_similar_recipes
+    #     top_10_similar_recipes = [(recipes[i]['title'], combined_similarities[i].item()) for i in sorted_indices[:10]]
+    #     return top_10_similar_recipes
 
 
     @staticmethod
@@ -82,10 +89,10 @@ class RecommendationSystem:
         for recipe, similarity in similar_recipes_by_ingredients:
             print(f"{recipe}: {similarity}")
         
-        similar_recipes_by_cuisine = RecommendationSystem.find_similar_recipes_by_cuisine(favorite_recipe, recipes)
-        print("\nSimilar recipes by cuisine:")
-        for recipe, similarity in similar_recipes_by_cuisine:
-            print(f"{recipe}: {similarity}")
+        # similar_recipes_by_cuisine = RecommendationSystem.find_similar_recipes_by_cuisine(favorite_recipe, recipes)
+        # print("\nSimilar recipes by cuisine:")
+        # for recipe, similarity in similar_recipes_by_cuisine:
+        #     print(f"{recipe}: {similarity}")
 
 class Command(BaseCommand):
     help = 'Recommend similar recipes based on a favorite recipe'
