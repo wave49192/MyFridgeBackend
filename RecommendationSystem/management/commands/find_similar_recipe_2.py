@@ -1,23 +1,29 @@
 from django.core.management.base import BaseCommand
 from RecommendationSystem.models import Recipe
-import torch
 import torch.nn.functional as F
+import nltk
+
+nltk.download('punkt')
 
 class RecommendationSystem:
     @staticmethod
     def find_similar_recipes_by_ingredients(favorite_recipe, recipes):
         ingredient_union = lambda favorite_recipes: set().union(*[set(recipe['cleaned_ingredients'].split(', ')) for recipe in favorite_recipes])
-        favorite_ingredients = ingredient_union(favorite_recipe) #list of all ingredient that are in the favourite recipe
-        recipe_ingredients = [recipe['cleaned_ingredients'].split(', ') for recipe in recipes] #a specific recipe that i want to compare with.
-        
-        #
-       #todo fill in the code by finding similarity
-     
+        favorite_ingredients = ingredient_union(favorite_recipe)
+        recipe_ingredients = [recipe['cleaned_ingredients'].split(', ') for recipe in recipes]
 
-        
-        top_10_similar_recipes = []
-        return top_10_similar_recipes
+        similar_recipes_score = {}
 
+        for recipe, ingredients in zip(recipes, recipe_ingredients):
+            similarity_score = 0
+            for favorite_ingredient in favorite_ingredients:
+                similarity_score += nltk.edit_distance(favorite_ingredient, ingredients)
+
+            similarity_score = similarity_score / len(favorite_ingredients)
+
+            similar_recipes_score[recipe['recipe_id']] = similarity_score
+
+        return similar_recipes_score
 
     @staticmethod
     def recommend_similar_recipes(favorite_recipe):
@@ -36,13 +42,24 @@ class RecommendationSystem:
             }
             for recipe in recipes_queryset
         ]
-        
+
         similar_recipes_by_ingredients = RecommendationSystem.find_similar_recipes_by_ingredients(favorite_recipe, recipes)
-        
+
         similar_recipes_score = {}
         print("Similar recipes by ingredients:")
-        ## fill in this code to store all the similarity score of every recipe comparing to the favourite recipe.
-        
+        for recipe_id, similarity_score in similar_recipes_by_ingredients.items():
+            similar_recipes_score[recipe_id] = similarity_score# sort the similar recipes by score
+        recipes_dict = {recipe['recipe_id']: recipe for recipe in recipes}
+
+        similar_recipes = [{'recipe_id': recipe_id, 'title': recipes_dict[recipe_id]['title'], 'similarity_score': score}
+                        for recipe_id, score in similar_recipes_score.items()]
+
+
+        sorted_similar_recipes = sorted(similar_recipes, key=lambda x: x['similarity_score'], reverse=True)
+        print("Top 10 similar recipes:")
+        for i in range(min(10, len(sorted_similar_recipes))):
+            print(f"{i+1}. {sorted_similar_recipes[i]['title']} (similarity score: {sorted_similar_recipes[i]['similarity_score']})")
+        return similar_recipes if similar_recipes_score else None
 
 
 class Command(BaseCommand):
