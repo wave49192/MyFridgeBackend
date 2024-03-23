@@ -6,6 +6,9 @@ import nltk
 nltk.download('punkt')
 
 class RecommendationSystem:
+    
+    ################################ 
+    ## i just found that the similarity score are high in the recipe that has a lot of ingredient and low in little ingredient, will fix later.
     @staticmethod
     def find_similar_recipes_by_ingredients(favorite_recipe, recipes):
         ingredient_union = lambda favorite_recipes: set().union(*[set(recipe['cleaned_ingredients'].split(', ')) for recipe in favorite_recipes])
@@ -66,28 +69,20 @@ class Command(BaseCommand):
     help = 'Recommend similar recipes based on a favorite recipe'
 
     def handle(self, *args, **kwargs):
-        favorite_recipe =     [{
-        "recipe_id": "5ed6604591c37cdc054bcac4",
-        "title": "Pizza Dip",
-        "image_url": "http://forkify-api.herokuapp.com/images/Pizza2BDip2B12B500c4c0a26c.jpg",
-        "publisher": "Closet Cooking",
-        "source_url": "http://www.closetcooking.com/2011/03/pizza-dip.html",
-        "cooking_time": 60,
-        "ingredients": "4 oz cream cheese room temperature, 0.25 cup sour cream, 0.25 cup mayonnaise, 0.5 cup mozzarella grated, 0.25 cup parmigiano reggiano grated, 1 cup pizza sauce, 0.5 cup mozzarella shredded/grated, 0.25 cup parmigiano reggiano grated, 2 oz pepperoni sliced, 2 tbsps green pepper sliced, 2 tbsps black olives sliced",
-        "cuisine_type": "German",
-        "cleaned_ingredients": "cream cheese room temperature, sour cream, mayonnaise, mozzarella grated, parmigiano reggiano grated, pizza sauce, mozzarella shredded/grated, parmigiano reggiano grated, pepperoni sliced, green pepper sliced, black olives sliced"
-    },    {
-        "recipe_id": "5ed6604591c37cdc054bcd08",
-        "title": "Pomegranate Yogurt Bowl",
-        "image_url": "http://forkify-api.herokuapp.com/images/breakfast_yogurt_bowlc10d.jpg",
-        "publisher": "101 Cookbooks",
-        "source_url": "http://www.101cookbooks.com/archives/pomegranate-yogurt-bowl-recipe.html",
-        "cooking_time": 60,
-        "ingredients": "None  For each bowl:, None  A big dollop of greek yogurt, 2 tbsps fresh pomegranate juice, None  A drizzle of honey, None  A handful of puffed quinoa crisps, None  Sprinkling of toasted sunflower seeds, None  Optional: whole pomegranate seeds or fresh/dried rose petals a bit of bee pollen",
-        "cuisine_type": "Italian",
-        "cleaned_ingredients": "None  For each bowl:, None  A big dollop of greek yogurt, fresh pomegranate juice, None  A drizzle of honey, None  A handful of puffed quinoa crisps, None  Sprinkling of toasted sunflower seeds, None  Optional: whole pomegranate seeds or fresh/dried rose petals a bit of bee pollen"
+        favorite_recipe = [    
+         {
+        "recipe_id": "5ed6604591c37cdc054bcfbd",
+        "title": "sweet potato (and marshmallow) biscuits",
+        "image_url": "http://forkify-api.herokuapp.com/images/6380938927_72dfcfb439a301.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2011/11/sweet-potato-and-marshmallow-biscuits/",
+        "cooking_time": 75,
+        "ingredients": "1 pound sweet potatoes, 0.33 cup buttermilk, 2 cups all-purpose flour, 1 tbsp baking powder, 3 tbsps granulated sugar, 1 tsp ground cinnamon, 0.25 tsp ground nutmeg, 0.25 tsp ground ginger, 0.13 tsp ground cloves, 0.5 tsp table salt, 5 tbsps unsalted butter cold, 1 cup miniature marshmallows",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "pound sweet potatoes, buttermilk, all-purpose flour, baking powder, granulated sugar, ground cinnamon, ground nutmeg, ground ginger, ground cloves, table salt, unsalted butter cold, miniature marshmallows"
     },
-                               ]
+    
+    ]
 
         self.stdout.write("Finding similar recipes...\n")
         RecommendationSystem.recommend_similar_recipes(favorite_recipe)
