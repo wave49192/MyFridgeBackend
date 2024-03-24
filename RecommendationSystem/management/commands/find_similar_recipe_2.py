@@ -6,9 +6,15 @@ import nltk
 nltk.download('punkt')
 
 class RecommendationSystem:
+
+    """
+    The similarity score are high in the recipe that has a lot of ingredient and low in little ingredient, will fix later.
+    The time complexity is high and can not be improved as it needs to do a nested loop in order to compare every word in the list 
+    So I will find another way to improve the time complexity by using another algorithm.
     
-    ################################ 
-    ## i just found that the similarity score are high in the recipe that has a lot of ingredient and low in little ingredient, will fix later.
+    Algorithm tried:
+    1 Nltk distance (The Levenshtein distance between two strings: more distance = less alike)
+    """
     @staticmethod
 
     def find_similar_recipes_by_ingredients(favorite_recipe, recipes):
