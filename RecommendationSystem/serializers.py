@@ -19,3 +19,9 @@ class RecipeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Recipe
         fields = ['recipe_id', 'title','image_url', 'publisher','source_url','cooking_time','ingredients','cuisine_type','cleaned_ingredients']
+class IngredientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Recipe
+        fields = ['title',
+                #   'cuisine_type',
+                  'cleaned_ingredients']
