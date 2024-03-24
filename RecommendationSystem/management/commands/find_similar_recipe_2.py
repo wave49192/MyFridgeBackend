@@ -10,21 +10,30 @@ class RecommendationSystem:
     ################################ 
     ## i just found that the similarity score are high in the recipe that has a lot of ingredient and low in little ingredient, will fix later.
     @staticmethod
+
     def find_similar_recipes_by_ingredients(favorite_recipe, recipes):
+        # Function to calculate the union of ingredients in all favorite recipes
         ingredient_union = lambda favorite_recipes: set().union(*[set(recipe['cleaned_ingredients'].split(', ')) for recipe in favorite_recipes])
+        
+        # Extracting favorite ingredients and ingredients for each recipe
         favorite_ingredients = ingredient_union(favorite_recipe)
         recipe_ingredients = [recipe['cleaned_ingredients'].split(', ') for recipe in recipes]
 
+        # Dictionary to store similarity scores for each recipe
         similar_recipes_score = {}
 
+        # Calculating similarity score for each recipe
         for recipe, ingredients in zip(recipes, recipe_ingredients):
             similarity_score = 0
             for favorite_ingredient in favorite_ingredients:
-                similarity_score += nltk.edit_distance(favorite_ingredient, ingredients)
+                # Calculate minimum edit distance between each favorite ingredient and each ingredient in the recipe
+                min_distance = min(nltk.edit_distance(favorite_ingredient, ingredient) for ingredient in ingredients)
+                # Normalize the edit distance by dividing by the length of the longer list
+                normalized_distance = min_distance / max(len(favorite_ingredient), len(ingredients))
+                similarity_score += normalized_distance
 
-            similarity_score = similarity_score / len(favorite_ingredients)
-
-            similar_recipes_score[recipe['recipe_id']] = similarity_score
+            # Store the average similarity score for the recipe
+            similar_recipes_score[recipe['recipe_id']] = similarity_score / len(favorite_ingredients)
 
         return similar_recipes_score
 
@@ -58,7 +67,7 @@ class RecommendationSystem:
                         for recipe_id, score in similar_recipes_score.items()]
 
 
-        sorted_similar_recipes = sorted(similar_recipes, key=lambda x: x['similarity_score'], reverse=True)
+        sorted_similar_recipes = sorted(similar_recipes, key=lambda x: x['similarity_score'], reverse=False)
         print("Top 10 similar recipes:")
         for i in range(min(10, len(sorted_similar_recipes))):
             print(f"{i+1}. {sorted_similar_recipes[i]['title']} (similarity score: {sorted_similar_recipes[i]['similarity_score']})")
