@@ -1,191 +1,5095 @@
-from django.core.management.base import BaseCommand
-from RecommendationSystem.models import Recipe
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import torch
 import torch.nn.functional as F
 
-class RecipeRecommendation:
-    def __init__(self, recipes, recipe_cuisines, ingredients):
-        self.recipes = recipes
-        self.recipe_cuisines = recipe_cuisines
-        self.ingredients = ingredients
-        self.ingredient_vocab = {ingredient: i for i, ingredient in enumerate(set([ingredient for recipe in ingredients for ingredient in recipe]))}
-        self.recipe_vectors = torch.stack([self.recipe_to_onehot(recipe) for recipe in recipes])
+# Define favorite recipes and their ingredients
+favorite_recipes = [
+ {
+        "recipe_id": "5ed6604691c37cdc054bd07d",
+        "title": "Bacon-Wrapped Jalapeno Thingies",
+        "image_url": "http://forkify-api.herokuapp.com/images/732616088_cad001b64e80ab.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2007/07/bacon-wrapped_j/",
+        "cooking_time": 15,
+        "ingredients": "20  whole fresh jalapenos 2-3 inches in size, 2  cubes cream cheese softened, 1 pound thin bacon sliced into thirds",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "whole fresh jalapenos 2-inches in size, cubes cream cheese softened, pound thin bacon sliced into thirds"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc0b",
+        "title": "Bacon-Wrapped Turkey with Pear Cider Gravy Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/11130_turkey_bacon_5_6205c8f.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/11130-bacon-wrapped-turkey-with-pear-cider-gravy",
+        "cooking_time": 90,
+        "ingredients": "1  fresh turkey, 3 tbsps vegetable oil, 2  medium white onions peeled and halved, 3  medium celery stalks halved crosswise, 10  medium garlic cloves peeled, 6  medium ripe pears such as anjou or bosc, 1 pound thinly sliced smoked bacon, 6 tbsps unsalted butter, 6 tbsps all-purpose flour, 3 cups low-sodium chicken broth at room temperature, 8  medium fresh sage leaves, 5  sprigs fresh thyme, 1  medium dried bay leaf, 1.5 cups hard pear cider such as ace perry cider or wyders",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "fresh turkey, vegetable oil, medium white onions peeled and halved, medium celery stalks halved crosswise, medium garlic cloves peeled, medium ripe pears such as anjou or bosc, pound thinly sliced smoked bacon, unsalted butter, all-purpose flour, low-sodium chicken broth at room temperature, medium fresh sage leaves, sprigs fresh thyme, medium dried bay leaf, hard pear cider such as ace perry cider or wyders"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccec",
+        "title": "Bacon-jalapeo cheese ball",
+        "image_url": "http://forkify-api.herokuapp.com/images/baconjalapenocheeseball_DSC2278c083ada9.jpg",
+        "publisher": "Homesick Texan",
+        "source_url": "http://homesicktexan.blogspot.com/2011/12/bacon-jalapeno-cheese-ball.html",
+        "cooking_time": 75,
+        "ingredients": "8 oz cream cheese room temperature, 0.5 cup shredded cheddar cheese, 2 tbsps chopped cilantro, 1  clove garlic minced, 0.25 tsp ground cumin, None  Pinch of cayenne, 1 tsp lime juice, 0.5 tsp worcestershire sauce, 2  jalapeos stems and seeds removed diced divided, 6  pieces cooked bacon crumbled divided, None  Salt to taste, 0.25 cup chopped pecans roasted, None  Crackers for serving",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "cream cheese room temperature, shredded cheddar cheese, chopped cilantro, clove garlic minced, ground cumin, None  Pinch of cayenne, lime juice, worcestershire sauce, jalapeos stems and seeds removed diced divided, pieces cooked bacon crumbled divided, None  Salt to taste, chopped pecans roasted, None  Crackers for serving"
+    },
+]
 
-    def recipe_to_onehot(self, recipe_name):
-        onehot_ingredient = torch.zeros(len(self.ingredient_vocab))
-        for ingredient in self.ingredients[self.recipes.index(recipe_name)]:
-            index = self.ingredient_vocab[ingredient]
-            onehot_ingredient[index] = 1
-        
-        onehot_cuisine = torch.zeros(len(set(self.recipe_cuisines.values())))
-        index = list(set(self.recipe_cuisines.values())).index(self.recipe_cuisines[recipe_name])
-        onehot_cuisine[index] = 1
-        
-        return torch.cat((onehot_ingredient, onehot_cuisine))
-
-    def find_similar_recipes_by_ingredients(self, favorite_recipe_indices, top_n=5):
-        avg_recipe_vector = torch.mean(torch.stack([self.recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
-        similarity_scores = F.cosine_similarity(self.recipe_vectors[:, :-len(set(self.recipe_cuisines.values()))], avg_recipe_vector[:-len(set(self.recipe_cuisines.values()))].unsqueeze(0))
-        
-        # Exclude favorite recipes from recommendations
-        for index in favorite_recipe_indices:
-            similarity_scores[index] = -1  # Set similarity score to -1 for favorite recipes
-        
-        top_indices = similarity_scores.argsort(descending=True)[:top_n]
-        return [(self.recipes[i], similarity_scores[i].item()) for i in top_indices]
-
-    def find_similar_recipes_by_cuisine(self, favorite_recipe_indices, top_n=5):
-        avg_recipe_vector = torch.mean(torch.stack([self.recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
-        similarity_scores = F.cosine_similarity(self.recipe_vectors[:, -len(set(self.recipe_cuisines.values())):], avg_recipe_vector[-len(set(self.recipe_cuisines.values())):].unsqueeze(0))
-        
-        # Exclude favorite recipes from recommendations
-        for index in favorite_recipe_indices:
-            similarity_scores[index] = -1  # Set similarity score to -1 for favorite recipes
-        
-        top_indices = similarity_scores.argsort(descending=True)[:top_n]
-        return [(self.recipes[i], similarity_scores[i].item()) for i in top_indices]
-
-class Command(BaseCommand):
-    help = 'Recommend recipes based on similarity'
-
-    def handle(self, *args, **options):
-    #this is a mock recipe and ingredients
-        recipes = [
-        "Berry Blast Smoothie",
-        "Coconut Curry Chicken",
-        "Classic Spaghetti Bolognese",
-        "Mango Tango Salsa",
-        "Cheesy Garlic Bread",
-        "Greek Salad",
-        "Stuffed Bell Peppers",
-        "Teriyaki Salmon",
-        "Caprese Salad",
-        "Vegetable Stir Fry",
-        "Blueberry Pancakes",
-        "Chicken Alfredo Pasta",
-        "Tropical Fruit Salad",
-        "Spinach and Feta Stuffed Chicken Breasts",
-        "Cajun Shrimp and Rice",
-        "Chocolate Chip Cookies",
-        "Grilled Cheese Sandwich",
-        "Chicken Caesar Salad",
-        "Beef Tacos",
-        "Pumpkin Soup",
-        "Apple Pie",
-        "Lasagna",
-        "Chicken Tikka Masala",
-        "Guacamole",
-        "French Toast",
-        "Creamy Mushroom Risotto",
-        "Beef Stroganoff",
-        "Tomato Basil Bruschetta",
-        "Crispy Baked Chicken Wings",
-        "Ratatouille",
-        "Honey Mustard Glazed Salmon",
-        "Shrimp Scampi",
-        "Vegetable Lasagna",
-        "Spicy Thai Noodles",
-        "Lemon Garlic Roast Chicken",
-        "Beef and Broccoli Stir Fry",
-        "Chocolate Lava Cake",
-        "Eggplant Parmesan"
-    ]
-        recipe_cuisines = {
-        "Berry Blast Smoothie": "Smoothie",
-        "Coconut Curry Chicken": "Indian",
-        "Classic Spaghetti Bolognese": "Italian",
-        "Mango Tango Salsa": "Mexican",
-        "Cheesy Garlic Bread": "Italian",
-        "Greek Salad": "Greek",
-        "Stuffed Bell Peppers": "Mexican",
-        "Teriyaki Salmon": "Japanese",
-        "Caprese Salad": "Italian",
-        "Vegetable Stir Fry": "Chinese",
-        "Blueberry Pancakes": "American",
-        "Chicken Alfredo Pasta": "Italian",
-        "Tropical Fruit Salad": "American",
-        "Spinach and Feta Stuffed Chicken Breasts": "Mediterranean",
-        "Cajun Shrimp and Rice": "Cajun",
-        "Chocolate Chip Cookies": "American",
-        "Grilled Cheese Sandwich": "American",
-        "Chicken Caesar Salad": "American",
-        "Beef Tacos": "Mexican",
-        "Pumpkin Soup": "American",
-        "Apple Pie": "American",
-        "Lasagna": "Italian",
-        "Chicken Tikka Masala": "Indian",
-        "Guacamole": "Mexican",
-        "French Toast": "American",
-        "Creamy Mushroom Risotto": "Italian",
-        "Beef Stroganoff": "Russian",
-        "Tomato Basil Bruschetta": "Italian",
-        "Crispy Baked Chicken Wings": "American",
-        "Ratatouille": "French",
-        "Honey Mustard Glazed Salmon": "American",
-        "Shrimp Scampi": "Italian",
-        "Vegetable Lasagna": "Italian",
-        "Spicy Thai Noodles": "Thai",
-        "Lemon Garlic Roast Chicken": "Mediterranean",
-        "Beef and Broccoli Stir Fry": "Chinese",
-        "Chocolate Lava Cake": "American",
-        "Eggplant Parmesan": "Italian"
-        ,"Dog Food":"Dog",
+# Define all recipes
+all_recipes = [
+    
+      {
+        "recipe_id": "5ed6604591c37cdc054bc8ff",
+        "title": "Incredibly Cheesy Turkey Meatloaf",
+        "image_url": "http://forkify-api.herokuapp.com/images/4240694e1.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Incredibly-Cheesy-Turkey-Meatloaf/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "2 pounds ground turkey, 1 cup milk, 1 cup italian seasoned bread crumbs, 2  eggs, 1 tsp salt, 0.25 tsp pepper, 0.75 pound colby cheese cut into 1/2-inch cubes, 0.5 cup ketchup",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "ground turkey, milk, italian seasoned bread crumbs, eggs, salt, pepper, pound colby cheese cut into 1/2-inch cubes, ketchup"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfa5",
+        "title": "Indian chickpea & vegetable soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/9044_MEDIUM0fc4.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/9044/indian-chickpea-and-vegetable-soup",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp vegetable oil, 1  large onion chopped, 1 tsp finely grated fresh root ginger, 1  garlic clove chopped, 1 tbsp garam masala, 850 ml vegetable stock, 2  large carrots quartered lengthways and chopped, 400 g can chickpeas drained, 100 g green beans chopped",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "vegetable oil, large onion chopped, finely grated fresh root ginger, garlic clove chopped, garam masala, ml vegetable stock, large carrots quartered lengthways and chopped, can chickpeas drained, green beans chopped"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd090",
+        "title": "Indian spiced greens",
+        "image_url": "http://forkify-api.herokuapp.com/images/5823_MEDIUMe744.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/5823/indian-spiced-greens",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp vegetable oil, 1 tsp cumin seeds, 1 tsp mustard seeds, 4  green chillies finely chopped, None  Large piece fresh root ginger grated, 1 tsp turmeric, 500 g shredded greens such as kale brussels sprouts or any other, 100 g peas, None  Juice 1 lemon, 1 tsp ground coriander, None  Small bunch coriander roughly chopped, 2 tbsps unsweetened desiccated coconut",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "vegetable oil, cumin seeds, mustard seeds, green chillies finely chopped, None  Large piece fresh root ginger grated, turmeric, shredded greens such as kale brussels sprouts or any other, peas, None  Juice emon, ground coriander, None  Small bunch coriander roughly chopped, unsweetened desiccated coconut"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc86b",
+        "title": "Individual Croissant Bread Puddings with Dried Cherries, Bittersweet Chocolate, and Toasted Pecans",
+        "image_url": "http://forkify-api.herokuapp.com/images/351790b986.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Individual-Croissant-Bread-Puddings-with-Dried-Cherries-Bittersweet-Chocolate-and-Toasted-Pecans-351790",
+        "cooking_time": 75,
+        "ingredients": "0.25 cup dried cherries, 0.25 cup pecans, None  Canola oil for greasing, 2 cups heavy cream, 1  vanilla bean, 4  large egg yolks, 1.5 cups sugar, 0.25 tsp salt, 3  day-old croissants, 2 tbsps coarsely grated bittersweet chocolate",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "dried cherries, pecans, None  Canola oil for greasing, heavy cream, vanilla bean, large egg yolks, sugar, salt, day-old croissants, coarsely grated bittersweet chocolate"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc900",
+        "title": "Indonesian Beef Rendang",
+        "image_url": "http://forkify-api.herokuapp.com/images/683257d24a.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Indonesian-Beef-Rendang/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "4  fresh banana peppers seeded and chopped, 4  shallots chopped, 5  cloves garlic chopped, 2 tbsps salt, 1 tsp ground red pepper, 2 pounds beef tenderloin cut into 1 1/2 x 2-inch cubes, 1  piece galangal thinly sliced, 3  stalks lemon grass chopped, 6  lime leaves, 1 tsp ground turmeric, 3  cans coconut milk",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "fresh banana peppers seeded and chopped, shallots chopped, cloves garlic chopped, salt, ground red pepper, beef tenderloin cut into 1/x 2-inch cubes, piece galangal thinly sliced, stalks lemon grass chopped, lime leaves, ground turmeric, cans coconut milk"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc901",
+        "title": "Irish Champ",
+        "image_url": "http://forkify-api.herokuapp.com/images/79925444f9.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Irish-Champ/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "2 pounds potatoes peeled and halved, 1 cup milk, 1  bunch green onions thinly sliced, 0.5 tsp salt or to taste, 0.25 cup butter, 1  pinch freshly ground black pepper to taste",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "potatoes peeled and halved, milk, bunch green onions thinly sliced, salt or to taste, butter, pinch freshly ground black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcab8",
+        "title": "Jerk Fish on Coconut Rice Topped with Banana and Pineapple Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/Jerk2BFish2Bon2BCoconut2BRice2BTopped2Bwith2BBanana2Band2BPineapple2BSalsa2B5002B022799787f5e.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/05/jerk-fish-on-coconut-rice-topped-with.html",
+        "cooking_time": 45,
+        "ingredients": "1 pound white fish fillets, 1  batch jerk marinade, 1 cup jasmine rice, 1 cup coconut milk unsweetened, 1 cup water, 1  batch banana and pineapple salsa",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "pound white fish fillets, batch jerk marinade, jasmine rice, coconut milk unsweetened, water, batch banana and pineapple salsa"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfd6",
+        "title": "Italian Pasta Salad Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29669_italian_pasta_salad_620cf67.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29669-italian-pasta-salad",
+        "cooking_time": 75,
+        "ingredients": "0.33 cup small-dice red onion, 3 tbsps red wine vinegar, 0.5 tsp dried oregano, None  Kosher salt, 1 pound fusilli pasta, 1 cup marinated artichoke hearts drained and coarsely chopped, 1.5 cups medium-dice provolone cheese, 1 cup medium-dice dry italian salami casing removed, 0.33 cup finely chopped oil-packed sun-dried tomatoes, 0.25 cup finely chopped fresh italian parsley leaves, 2 tbsps extra-virgin olive oil, None  Freshly ground black pepper",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "small-dice red onion, red wine vinegar, dried oregano, None  Kosher salt, pound fusilli pasta, marinated artichoke hearts drained and coarsely chopped, medium-dice provolone cheese, medium-dice dry italian salami casing removed, finely chopped oil-packed sun-dried tomatoes, finely chopped fresh italian parsley leaves, extra-virgin olive oil, None  Freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc906",
+        "title": "Italian Sausage Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/521051157c.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Italian-Sausage-Soup/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1 pound italian sausage, 1  clove garlic minced, 2  cans beef broth, 1  can italian-style stewed tomatoes, 1 cup sliced carrots, 1  can great northern beans undrained, 2  small zucchini cubed, 2 cups spinach - packed rinsed and torn, 0.25 tsp ground black pepper, 0.25 tsp salt",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "pound italian sausage, clove garlic minced, cans beef broth, can italian-style stewed tomatoes, sliced carrots, can great northern beans undrained, small zucchini cubed, spinach - packed rinsed and torn, ground black pepper, salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb3b",
+        "title": "Italian Sausage and Cabbage Stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/cabbagestewa300x200e64136e4.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/italian_sausage_and_cabbage_stew/",
+        "cooking_time": 90,
+        "ingredients": "2 tbsps olive oil, 1 pound sweet italian sausage bulk or removed from casings, 1  large yellow onion half sliced and half minced, 2  garlic cloves minced, 1.5 cups white wine, 1  15-oz can of white beans drained, 1  quart vegetable or chicken stock, 1  quart water, 1 tsp salt more to taste, 1  2-pound savoy cabbage quartered then sliced into 1/4-inch thick slices, 2  bay leaves, 1 cup chopped parsley loosely packed, 0.5 cup to a cup of freshly grated parmesan or pecorino cheese for garnish",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "olive oil, pound sweet italian sausage bulk or removed from casings, large yellow onion half sliced and half minced, garlic cloves minced, white wine, 15-oz can of white beans drained, quart vegetable or chicken stock, quart water, salt more to taste, 2-pound savoy cabbage quartered then sliced into 1/4-inch thick slices, bay leaves, chopped parsley loosely packed, to a cup of freshly grated parmesan or pecorino cheese for garnish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca5e",
+        "title": "Italian Turkey, Quinoa & Zucchini Meatballs Recipe in Lettuce Wraps",
+        "image_url": "http://forkify-api.herokuapp.com/images/MeatballLettuceWrapsSquare5a11.jpg",
+        "publisher": "Cookin Canuck",
+        "source_url": "http://www.cookincanuck.com/2013/01/baked-turkey-quinoa-zucchini-meatballs-recipe-in-lettuce-wraps/",
+        "cooking_time": 90,
+        "ingredients": "1  1/4 lb ground turkey, 1 cup cooked quinoa, 1  medium onion grated, 3  garlic cloves minced, 0.5 cup grated zucchini, 0.25 cup chopped italian parsley plus more for garnish, 0.25 tsp dried chile flakes, 2 tbsps soy sauce, 1 tsp ground oregano, 0.5 tsp ground pepper, 1  egg beaten, 2 cups tomato sauce, 9  medium to large butter lettuce leaves, 6 tbsps finely grated parmesan cheese",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "1/ground turkey, cooked quinoa, medium onion grated, garlic cloves minced, grated zucchini, chopped italian parsley plus more for garnish, dried chile flakes, soy sauce, ground oregano, ground pepper, egg beaten, tomato sauce, medium to large butter lettuce leaves, finely grated parmesan cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca71",
+        "title": "Italian-style beef stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/2209_MEDIUM61b0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2209/italianstyle-beef-stew",
+        "cooking_time": 60,
+        "ingredients": "1  onion sliced, 1  garlic clove sliced, 2 tbsps olive oil, 300 g pack beef stir-fry strips or use beef steak thinly sliced, 1  yellow pepper deseeded and thinly sliced, 400 g can chopped tomatoes, None  Sprig rosemary chopped, None  Handful pitted olives",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "onion sliced, garlic clove sliced, olive oil, pack beef stir-fry strips or use beef steak thinly sliced, yellow pepper deseeded and thinly sliced, can chopped tomatoes, None  Sprig rosemary chopped, None  Handful pitted olives"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb3c",
+        "title": "Jamaican Goat Curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/jamaicangoatcurry300x2000c39cb67.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/jamaican_goat_curry/",
+        "cooking_time": 75,
+        "ingredients": "0.25 cup vegetable oil, 14 tbsps curry powder, 1 tbsp allspice, 3 pounds goat, None  Salt, 2  onions chopped, 1  habanero or scotch bonnet peppers seeded and chopped, None  A 2-inch piece of ginger peeled and minced, 1  head of garlic peeled and chopped, 1  cans coconut milk, 1  15-oz can of tomato sauce or crushed tomatoes, 1 tbsp dried thyme, 7 cups water, 5  yukon gold potatoes peeled and cut into 1-inch chunks",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "vegetable oil, curry powder, allspice, goat, None  Salt, onions chopped, habanero or scotch bonnet peppers seeded and chopped, None  A 2-inch piece of ginger peeled and minced, head of garlic peeled and chopped, cans coconut milk, 15-oz can of tomato sauce or crushed tomatoes, dried thyme, water, yukon gold potatoes peeled and cut into 1-inch chunks"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc923",
+        "title": "Jamie's Christmas turkey",
+        "image_url": "http://forkify-api.herokuapp.com/images/294_1_1350900104_lrgaf53.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/turkey-recipes/jamie-s-christmas-turkey",
+        "cooking_time": 105,
+        "ingredients": "5 kg turkey preferably free-range or organic, None  Olive oil, None  Sea salt, None  Freshly ground black pepper, 1  clementine halved, None  A few sprigs fresh rosemary, 2  onions peeled and roughly chopped, 2  sticks celery roughly chopped, 2  carrots roughly chopped, None  Olive oil, 2  onions peeled and finely chopped, None  Sea salt, None  Freshly ground black pepper, 1 tsp ground nutmeg, None  A few sprigs fresh sage leaves picked and roughly chopped, 300 g higher-welfare pork mince, 1  large handful breadcrumbs",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "turkey preferably free-range or organic, None  Olive oil, None  Sea salt, None  Freshly ground black pepper, clementine halved, None  A few sprigs fresh rosemary, onions peeled and roughly chopped, sticks celery roughly chopped, carrots roughly chopped, None  Olive oil, onions peeled and finely chopped, None  Sea salt, None  Freshly ground black pepper, ground nutmeg, None  A few sprigs fresh sage leaves picked and roughly chopped, higher-welfare pork mince, large handful breadcrumbs"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc90a",
+        "title": "Janet's Rich Banana Bread",
+        "image_url": "http://forkify-api.herokuapp.com/images/1717611eb3.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Janets-Rich-Banana-Bread/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "0.5 cup butter melted, 1 cup white sugar, 2  eggs, 1 tsp vanilla extract, 1.5 cups all-purpose flour, 1 tsp baking soda, 0.5 tsp salt, 0.5 cup sour cream, 0.5 cup chopped walnuts, 2  medium bananas sliced",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "butter melted, white sugar, eggs, vanilla extract, all-purpose flour, baking soda, salt, sour cream, chopped walnuts, medium bananas sliced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc90b",
+        "title": "Jay’s Signature Pizza Crust",
+        "image_url": "http://forkify-api.herokuapp.com/images/237891b5e4.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Jays-Signature-Pizza-Crust/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "2.25 tsps active dry yeast, 0.5 tsp brown sugar, 1.5 cups warm water, 1 tsp salt, 2 tbsps olive oil, 3.33 cups all-purpose flour",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "active dry yeast, brown sugar, warm water, salt, olive oil, all-purpose flour"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb3d",
+        "title": "Jerusalem Artichoke Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/jerusalemartichokesoupa300x200508b2513.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/jerusalem_artichoke_soup/",
+        "cooking_time": 45,
+        "ingredients": "2 tbsps unsalted butter, 1 cup chopped onion, 2  celery stalks chopped, 2  large garlic cloves chopped, 2 pounds jerusalem artichokes peeled and cut into chunks, 1  quart chicken stock, None  Salt and black pepper to taste",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "unsalted butter, chopped onion, celery stalks chopped, large garlic cloves chopped, jerusalem artichokes peeled and cut into chunks, quart chicken stock, None  Salt and black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc90e",
+        "title": "Johnsonville&#174; Italian Sausage Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/9881973d7e.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Johnsonville-Italian-Sausage-Lasagna/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "12  lasagna noodles uncooked, 2 tbsps olive oil, 1  package johnsonville&#174; all natural italian ground sausage, 1  onion, 2  cloves garlic chopped, 1  jar classico&#174; four cheese pasta sauce, 4 cups ricotta cheese, 1  large egg, 0.5 cup grated parmesan cheese, 2 cups fresh spinach lightly packed and chopped, 2 cups shredded mozzarella cheese, 1 tsp dried oregano",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "lasagna noodles uncooked, olive oil, package johnsonville&#174; all natural italian ground sausage, onion, cloves garlic chopped, jar classico&#174; four cheese pasta sauce, ricotta cheese, large egg, grated parmesan cheese, fresh spinach lightly packed and chopped, shredded mozzarella cheese, dried oregano"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce7e",
+        "title": "Joolss favourite beef stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/299_1_1350900322_lrgbeb4.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "https://www.jamieoliver.com/recipes/beef-recipes/jools-s-favourite-beef-stew",
+        "cooking_time": 120,
+        "ingredients": "None  Olive oil, 1  knob butter, 1  onion peeled and chopped, 1  handful fresh sage leaves, 800 g quality stewing steak or beef skirt cut into 5cm pieces, None  Sea salt, None  Freshly ground black pepper, None  Flour to dust, 2  parsnips peeled and quartered, 4  carrots peeled and halved, None  Butternut squash halved deseeded and roughly diced, 1  handful jerusalem artichokes peeled and halved optional, 500 g small potatoes, 2 tbsps tomato pure, None  Bottle red wine, 285 ml organic beef or vegetable stock, None  Finely grated zest of 1 lemon, 1  handful rosemary leaves picked, 1  clove garlic peeled and finely chopped",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "None  Olive oil, knob butter, onion peeled and chopped, handful fresh sage leaves, quality stewing steak or beef skirt cut into 5cm pieces, None  Sea salt, None  Freshly ground black pepper, None  Flour to dust, parsnips peeled and quartered, carrots peeled and halved, None  Butternut squash halved deseeded and roughly diced, handful jerusalem artichokes peeled and halved optional, small potatoes, tomato pure, None  Bottle red wine, ml organic beef or vegetable stock, None  Finely grated zest of emon, handful rosemary leaves picked, clove garlic peeled and finely chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca33",
+        "title": "Joolss favourite beef stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/299_1_1350900322_lrgbeb4.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/beef-recipes/jools-s-favourite-beef-stew",
+        "cooking_time": 105,
+        "ingredients": "None  Olive oil, 1  knob butter, 1  onion peeled and chopped, 1  handful fresh sage leaves, 800 g quality stewing steak or beef skirt cut into 5cm pieces, None  Sea salt, None  Freshly ground black pepper, None  Flour to dust, 2  parsnips peeled and quartered, 4  carrots peeled and halved, None  Butternut squash halved deseeded and roughly diced, 1  handful jerusalem artichokes peeled and halved optional, 500 g small potatoes, 2 tbsps tomato pure, None  Bottle red wine, 285 ml organic beef or vegetable stock, None  Finely grated zest of 1 lemon, 1  handful rosemary leaves picked, 1  clove garlic peeled and finely chopped",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "None  Olive oil, knob butter, onion peeled and chopped, handful fresh sage leaves, quality stewing steak or beef skirt cut into 5cm pieces, None  Sea salt, None  Freshly ground black pepper, None  Flour to dust, parsnips peeled and quartered, carrots peeled and halved, None  Butternut squash halved deseeded and roughly diced, handful jerusalem artichokes peeled and halved optional, small potatoes, tomato pure, None  Bottle red wine, ml organic beef or vegetable stock, None  Finely grated zest of emon, handful rosemary leaves picked, clove garlic peeled and finely chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd24",
+        "title": "Kale Market Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/kale_market_saladd20e.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/kale-market-salad-recipe.html",
+        "cooking_time": 90,
+        "ingredients": "None  Green garlic dressing:, 2  stalks green garlic rinsed and chopped, 0.25 tsp fine grain sea salt plus more to taste, 2 tbsps fresh lemon juice, 0.33 cup / 80 ml extra virgin olive oil, 2 tbsps ripe avocado, 1 tsp honey or to taste, None  Fresh pepper to taste, 1  bunch kale destemmed torn into pieces, 1 cup / 5.5 oz cooked farro or wheat berries, 4  farmers' market carrots very thinly sliced, 1  small bulb of fennel transparently sliced, 1  avocado cut into small cubes, None  A big handful of almond slices toasted",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "None  Green garlic dressing:, stalks green garlic rinsed and chopped, fine grain sea salt plus more to taste, fresh lemon juice, / ml extra virgin olive oil, ripe avocado, honey or to taste, None  Fresh pepper to taste, bunch kale destemmed torn into pieces, / cooked farro or wheat berries, farmers' market carrots very thinly sliced, small bulb of fennel transparently sliced, avocado cut into small cubes, None  A big handful of almond slices toasted"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca08",
+        "title": "Kale, Strawberry & Avocado Salad with Lemon Poppy Seed Dressing",
+        "image_url": "http://forkify-api.herokuapp.com/images/KaleStrawberryAvocadoSalad10ffa.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/kale-strawberry-avocado-salad-with-lemon-poppy-seed-dressing/",
+        "cooking_time": 75,
+        "ingredients": "None  For the salad:, 4 cups chopped kale stems removed, None  Pinch of sea salt, 1 cup sliced strawberries, 1  avocado chopped, 0.33 cup sliced almonds, 0.25 cup feta cheese, None  For the lemon poppy seed dressing:, 2 tbsps olive oil, 2 tbsps fresh lemon juice, 1 tsp honey, 0.5 tsp poppy seeds, 0.13 tsp salt, 0.13 tsp freshly ground black pepper",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "None  For the salad:, chopped kale stems removed, None  Pinch of sea salt, sliced strawberries, avocado chopped, sliced almonds, feta cheese, None  For the lemon poppy seed dressing:, olive oil, fresh lemon juice, honey, poppy seeds, salt, freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbba",
+        "title": "Kale-Apple Smoothie",
+        "image_url": "http://forkify-api.herokuapp.com/images/kalesmoothie_300f8adb817.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/kale-apple-smoothie-00000000050666/index.html",
+        "cooking_time": 45,
+        "ingredients": "0.75 cup chopped kale ribs and thick stems removed, 1  small stalk celery chopped, 1  banana, 0.5 cup apple juice, 0.5 cup ice, 1 tbsp fresh lemon juice",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "chopped kale ribs and thick stems removed, small stalk celery chopped, banana, apple juice, ice, fresh lemon juice"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd068",
+        "title": "Key lime pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/2155644_MEDIUMe510.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2155644/key-lime-pie",
+        "cooking_time": 45,
+        "ingredients": "300 g hob nobs, 150 g butter melted, 1  x 397g tin condensed milk, 3  medium egg yolks, None  Finely grated zest and juice of 4 limes, 300 ml double cream, 1 tbsp icing sugar, None  Extra lime zest to decorate",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "hob nobs, butter melted, x 397g tin condensed milk, medium egg yolks, None  Finely grated zest and juice of imes, ml double cream, icing sugar, None  Extra lime zest to decorate"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc912",
+        "title": "Kimbop (Korean Sushi)",
+        "image_url": "http://forkify-api.herokuapp.com/images/698120bfc8.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Kimbop-Korean-Sushi/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1 cup uncooked glutinous white rice, 1.5 cups water, 1 tbsp sesame oil, None  Salt to taste, 2  eggs beaten, 4  sheets sushi nori, 1  cucumber cut into thin strips, 1  carrot cut into thin strips, 4  slices american processed cheese cut into thin strips, 4  slices cooked ham cut into thin strips, 2 tsps sesame oil",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "uncooked glutinous white rice, water, sesame oil, None  Salt to taste, eggs beaten, sheets sushi nori, cucumber cut into thin strips, carrot cut into thin strips, slices american processed cheese cut into thin strips, slices cooked ham cut into thin strips, sesame oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcba6",
+        "title": "Kitchen Sink Chocolate Bark",
+        "image_url": "http://forkify-api.herokuapp.com/images/cookieschokbark_300f22b2cec.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/chocolate-bark-00100000069979/index.html",
+        "cooking_time": 30,
+        "ingredients": "0.75 cup sweetened shredded coconut, 0.75 cup mixed salted nuts coarsely chopped, 0.5 cup mixed dried fruit or chopped dried apricots or papaya, 1 cup broken-up pretzels, 1 pound semisweet chocolate chopped",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "sweetened shredded coconut, mixed salted nuts coarsely chopped, mixed dried fruit or chopped dried apricots or papaya, broken-up pretzels, pound semisweet chocolate chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc914",
+        "title": "Kofta Kebabs",
+        "image_url": "http://forkify-api.herokuapp.com/images/85278274b8.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Kofta-Kebabs/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "4  cloves garlic minced, 1 tsp kosher salt, 1 pound ground lamb, 3 tbsps grated onion, 3 tbsps chopped fresh parsley, 1 tbsp ground coriander, 1 tsp ground cumin, 0.5 tbsp ground cinnamon, 0.5 tsp ground allspice, 0.25 tsp cayenne pepper, 0.25 tsp ground ginger, 0.25 tsp ground black pepper, 28  bamboo skewers soaked in water for 30 minutes",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "cloves garlic minced, kosher salt, pound ground lamb, grated onion, chopped fresh parsley, ground coriander, ground cumin, ground cinnamon, ground allspice, cayenne pepper, ground ginger, ground black pepper, bamboo skewers soaked in water for minutes"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaba",
+        "title": "Kolokythokeftedes (Zucchini and Feta Balls)",
+        "image_url": "http://forkify-api.herokuapp.com/images/Kolokythokeftedes(ZucchiniandFetaBalls)150043120830.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2009/09/kolokythokeftedes-zucchini-and-feta.html",
+        "cooking_time": 75,
+        "ingredients": "2 cups zucchini grated and squeezed, 0.25 cup of feta crumbled, 1  splash ouzo, 1  clove garlic chopped, 2  green onions sliced, 1  handful herbs chopped, 1  egg lightly beaten, None  Salt and pepper to taste, None  Flour, None  Breadcrumbs, None  Oil for frying",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "zucchini grated and squeezed, of feta crumbled, splash ouzo, clove garlic chopped, green onions sliced, handful herbs chopped, egg lightly beaten, None  Salt and pepper to taste, None  Flour, None  Breadcrumbs, None  Oil for frying"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf5a",
+        "title": "Kool-Aid Popcorn",
+        "image_url": "http://forkify-api.herokuapp.com/images/popcorn48b1.jpg",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/desserts/kool-aid-popcorn/",
+        "cooking_time": 30,
+        "ingredients": "2 cups 2 cups, 1 cup 1 cup, 1 cup cups, 6  quarts 6 quarts, 2  packages 2 packages, 1 tsp 1 teaspoon",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": ", , cups, quarts quarts, packages s, teaspoon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc917",
+        "title": "Korean Sushi",
+        "image_url": "http://forkify-api.herokuapp.com/images/492649be85.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Korean-Sushi/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "2 cups uncooked short-grain white rice, 2 cups water, 2 tbsps cider vinegar, 2  leaves chard, 2  eggs well beaten, 2 tbsps soy sauce divided, 3 tbsps water, 1  onion diced, 1 tbsp vegetable oil, 0.75 pound beef tenderloin minced, 1  can chunk light tuna in water drained, 1  carrot julienned, 1  cucumber julienned, 6  sheets nori",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "uncooked short-grain white rice, water, cider vinegar, leaves chard, eggs well beaten, soy sauce divided, water, onion diced, vegetable oil, pound beef tenderloin minced, can chunk light tuna in water drained, carrot julienned, cucumber julienned, sheets nori"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc936",
+        "title": "Korean-Style Grilled Beef",
+        "image_url": "http://forkify-api.herokuapp.com/images/koreanbeef640x360288x1621f6f.jpg",
+        "publisher": "PBS Food",
+        "source_url": "http://www.pbs.org/food/recipes/korean-style-grilled-beef/",
+        "cooking_time": 60,
+        "ingredients": "0.33 cup soy sauce, 0.33 cup soju, 3 tbsps honey, 2 tbsps pureed kiwifruit, 1 tbsp sesame oil, 2 tsps grated ginger, 3  large cloves garlic grated, 2  scallions minced, None  Lettuce and kimchi for serving, 2 pounds beef",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "soy sauce, soju, honey, pureed kiwifruit, sesame oil, grated ginger, large cloves garlic grated, scallions minced, None  Lettuce and kimchi for serving, beef"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd10e",
+        "title": "Lamb & apricot stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/1813677_MEDIUM18d0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1813677/lamb-and-apricot-stew",
+        "cooking_time": 75,
+        "ingredients": "2 tbsps olive oil, 250 g stewing lamb pieces, 1  onion thinly sliced, 1  garlic clove chopped, 1 tbsp chopped ginger, 2 tsps ras-el-hanout berber or other middle eastern spice mix, 1 tbsp tomato pure, 5  soft dried apricots halved, 300 ml vegetable or chicken stock, None  Cooked couscous mint or coriander leaves and lemon wedges to serve",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "olive oil, stewing lamb pieces, onion thinly sliced, garlic clove chopped, chopped ginger, ras-el-hanout berber or other middle eastern spice mix, tomato pure, soft dried apricots halved, ml vegetable or chicken stock, None  Cooked couscous mint or coriander leaves and lemon wedges to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc92e",
+        "title": "Lamb & spinach curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/890656_MEDIUMf9b8.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/890656/lamb-and-spinach-curry",
+        "cooking_time": 90,
+        "ingredients": "None  Small chunk ginger peeled and chopped, 2  garlic cloves chopped, 2  onions roughly chopped, 2  green chillies sliced, 1 tbsp oil, 1 tbsp ground cumin, 1 tbsp ground coriander, 1 tsp ground turmeric, 1 tsp chilli powder, 600 g lamb neck fillet, 4  tomatoes chopped, 1 tbsp tomato pure, 100 g bag spinach chopped",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "None  Small chunk ginger peeled and chopped, garlic cloves chopped, onions roughly chopped, green chillies sliced, oil, ground cumin, ground coriander, ground turmeric, chilli powder, lamb neck fillet, tomatoes chopped, tomato pure, bag spinach chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbaf",
+        "title": "Lamb Kebabs With Lima Bean Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/lambkebabslimabeans_300b8adef0b.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/lamb-kebabs-with-lima-bean-salad-00000000050988/index.html",
+        "cooking_time": 75,
+        "ingredients": "3 tbsps olive oil, 2 tbsps red wine vinegar, 1 tbsp chopped fresh oregano, 2  cloves garlic chopped, 0.75 pound kosher salt and black pepper, 1  boneless lamb top round steak or shoulder chop cut into 16 pieces, 1  lemon cut into 8 pieces, 1 pound medium red onion cut into 8 wedges, 1 oz frozen baby lima beans, 0.25 cup feta crumbled, 0.25 cup pitted kalamata olives coarsely chopped",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "olive oil, red wine vinegar, chopped fresh oregano, cloves garlic chopped, pound kosher salt and black pepper, boneless lamb top round steak or shoulder chop cut into pieces, lemon cut into pieces, pound medium red onion cut into wedges, frozen baby lima beans, feta crumbled, pitted kalamata olives coarsely chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc1a",
+        "title": "Paleo Pumpkin Bars",
+        "image_url": "http://forkify-api.herokuapp.com/images/PaleoPumpkinBars6450e5f9.jpg",
+        "publisher": "Elana's Pantry",
+        "source_url": "http://www.elanaspantry.com/paleo-pumpkin-bars/",
+        "cooking_time": 60,
+        "ingredients": "1 cup coconut flour, 1 tsp celtic sea salt, 1 tsp baking soda, 1 tsp cinnamon, 4  large eggs, 1 cup fresh roasted pumpkin or winter squash, 1 cup honey, 1 cup coconut oil, 1 cup chocolate drops",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "coconut flour, celtic sea salt, baking soda, cinnamon, large eggs, fresh roasted pumpkin or winter squash, honey, coconut oil, chocolate drops"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf7a",
+        "title": "Lamb Kebabs with Mint Pesto",
+        "image_url": "http://forkify-api.herokuapp.com/images/360234797c.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Lamb-Kebabs-with-Mint-Pesto-360234",
+        "cooking_time": 90,
+        "ingredients": "1 cup fresh mint leaves, 0.5 cup fresh cilantro leaves, 2 tbsps pine nuts, 2 tbsps freshly grated parmesan cheese, 1 tbsp fresh lemon juice, 1  medium garlic clove peeled, 0.5 tsp coarse kosher salt, 0.5 cup extra-virgin olive oil, 1 tbsp extra-virgin olive oil plus additional for brushing, 4  large garlic cloves minced, 2 tsps coarse kosher salt, 1.5 tsps coriander seeds ground in spice mill or in mortar with pestle, 2 pounds trimmed boneless leg of lamb cut into 1 1/4-inch cubes, 2  large red bell peppers cut into 1-inch squares, 1  large red onion cut into 1-inch squares, 6  to 8 metal skewers",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "fresh mint leaves, fresh cilantro leaves, pine nuts, freshly grated parmesan cheese, fresh lemon juice, medium garlic clove peeled, coarse kosher salt, extra-virgin olive oil, extra-virgin olive oil plus additional for brushing, large garlic cloves minced, coarse kosher salt, coriander seeds ground in spice mill or in mortar with pestle, trimmed boneless leg of lamb cut into 1/4-inch cubes, large red bell peppers cut into 1-inch squares, large red onion cut into 1-inch squares, to metal skewers"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcabb",
+        "title": "Lamb Meatballs in a Mint Tomato Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/Lamb2BMeatballs2Bin2Ba2BMint2BTomato2BSauce2B12B5008daf7217.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/04/lamb-meatballs-in-mint-tomato-sauce.html",
+        "cooking_time": 135,
+        "ingredients": "1 tbsp olive oil, 1  onion diced, 2  cloves garlic chopped, 0.5 cup dry white wine, 1  can crushed tomatoes, 0.5 tsp oregano, 0.5 tsp cinnamon, None  Salt and pepper to taste, 1  batch mint lamb meatballs browned, 1  handful mint chopped, 1  handful parsley chopped, 1 cup couscous, 0.25 cup almond slivers toasted, 1 pound ground lamb, 0.25 cup onion diced, 1  clove garlic chopped, 2 tbsps mint chopped, 2 tbsps parsley chopped, 1  egg, 0.25 cup whole wheat breads crumbs freshly made, 0.5 tsp cumin toasted and ground, 0.5 tsp coriander toasted and ground, 0.5 tsp cinnamon, None  Salt and pepper to taste, 2 tbsps olive oil",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "olive oil, onion diced, cloves garlic chopped, dry white wine, can crushed tomatoes, oregano, cinnamon, None  Salt and pepper to taste, batch mint lamb meatballs browned, handful mint chopped, handful parsley chopped, couscous, almond slivers toasted, pound ground lamb, onion diced, clove garlic chopped, mint chopped, parsley chopped, egg, whole wheat breads crumbs freshly made, cumin toasted and ground, coriander toasted and ground, cinnamon, None  Salt and pepper to taste, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf71",
+        "title": "Lamb kebabs",
+        "image_url": "http://forkify-api.herokuapp.com/images/lambkebabs_2214_16x991b5.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/lambkebabs_2214",
+        "cooking_time": 75,
+        "ingredients": "None  Juice of half lemon, 450 l lamb mince, 1 tbsp oil, 55 oz fresh coriander, 4  cloves garlic, 4  green chillies, 1 tsp coriander, 1 tsp cumin, 1 tsp black peppercorns, 1 tsp turmeric, 1 tsp garam masala, 2 tsps grated ginger, 1 tsp salt",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "None  Juice of half lemon, lamb mince, oil, fresh coriander, cloves garlic, green chillies, coriander, cumin, black peppercorns, turmeric, garam masala, grated ginger, salt"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd06a",
+        "title": "Lamb kebabs & Greek salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/2220665_MEDIUMd44c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2220665/lamb-kebabs-and-greek-salad",
+        "cooking_time": 60,
+        "ingredients": "None  Juice lemon, 2 tbsps olive oil, 1  garlic clove crushed, 600 g diced lamb leg, 4  large tomatoes chopped, 1  cucumber chopped, None  Large handful black olives roughly chopped, 200 g pack feta cheese crumbled, None  Bunch of mint chopped",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "None  Juice lemon, olive oil, garlic clove crushed, diced lamb leg, large tomatoes chopped, cucumber chopped, None  Large handful black olives roughly chopped, pack feta cheese crumbled, None  Bunch of mint chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf38",
+        "title": "Lamb, chickpea & spinach curry with masala mash",
+        "image_url": "http://forkify-api.herokuapp.com/images/1518_MEDIUM4eb4.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1518/lamb-chickpea-and-spinach-curry-with-masala-mash",
+        "cooking_time": 90,
+        "ingredients": "1 tbsp oil, 500 g lean lamb stewing cubes, 1  red onion sliced into half moons, 1  cm piece ginger peeled and finely chopped, 2  garlic cloves crushed, 1 tbsp ground cumin, 1 tbsp ground coriander, 400 g can tomatoes, 200 g can chickpeas washed and drained, 1 tsp garam masala, 100 g spinach roughly chopped, 700 g potatoes peeled and quartered, 1 tbsp korma curry paste, 100 ml thick yogurt",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "oil, lean lamb stewing cubes, red onion sliced into half moons, cm piece ginger peeled and finely chopped, garlic cloves crushed, ground cumin, ground coriander, can tomatoes, can chickpeas washed and drained, garam masala, spinach roughly chopped, potatoes peeled and quartered, korma curry paste, ml thick yogurt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb3f",
+        "title": "Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/lasagna266x200c47220b0.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/lasagna/",
+        "cooking_time": 165,
+        "ingredients": "1  lb lean ground beef, 1  medium sweet white onion diced, 1  large bell pepper seeds and veins removed diced, 1  lb dry lasagna noodles, 0.25 cup sugar, 29 oz can tomato sauce, 28.5 oz can stewed tomatoes, 6.5 oz can tomato paste, 1  lb ricotta cheese, 1  1/2 lb mozzarella cheese, 3  lb freshly grated parmesan cheese, None  Garlic powder, None  Oregano, None  Italian spice, None  Salt, None  Garlic salt, None  Parsley diced, 1  garlic cloves minced, None  White wine vinegar, None  Large skillet, 6  qt pot, 3  qt pot, 13  x 9\" x 2\" lasagna pan, None  Large colander, None  Large baking pan, None  Large slotted cooking spoon, None  Large cooking spoon, None  Paring knife",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "lb lean ground beef, medium sweet white onion diced, large bell pepper seeds and veins removed diced, lb dry lasagna noodles, sugar, can tomato sauce, can stewed tomatoes, can tomato paste, lb ricotta cheese, 1/mozzarella cheese, lb freshly grated parmesan cheese, None  Garlic powder, None  Oregano, None  Italian spice, None  Salt, None  Garlic salt, None  Parsley diced, garlic cloves minced, None  White wine vinegar, None  Large skillet, qt pot, qt pot, x 9\" x 2\" lasagna pan, None  Large colander, None  Large baking pan, None  Large slotted cooking spoon, None  Large cooking spoon, None  Paring knife"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd03f",
+        "title": "Leek, bacon & potato soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/3505_MEDIUMc084.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3505/leek-bacon-and-potato-soup",
+        "cooking_time": 45,
+        "ingredients": "25 g butter, 3  rashers streaky bacon chopped, 1  onion chopped, 400 g pack trimmed leeks sliced and well washed, 3  medium potatoes peeled and diced, 1 l hot vegetable stock, 142 ml pot single cream, 4  rashers streaky bacon to serve",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "butter, rashers streaky bacon chopped, onion chopped, pack trimmed leeks sliced and well washed, medium potatoes peeled and diced, hot vegetable stock, ml pot single cream, rashers streaky bacon to serve"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0b6",
+        "title": "Leeks wrapped in Parma ham & Gruyre",
+        "image_url": "http://forkify-api.herokuapp.com/images/3815_MEDIUM1778.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3815/leeks-wrapped-in-parma-ham-and-gruyre",
+        "cooking_time": 60,
+        "ingredients": "200 ml olive oil, 10  black peppercorns, 12  small leeks washed and trimmed to 20cm long, 100 g butter cubed, 50 g flour, 250 ml whole milk hot, 24  parma ham slices, None  Gruyre or a similar cheese 12 slices plus a handful of grated, 6  hard-boiled eggs roughly chopped, 12  slices of white bread made into breadcrumbs",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "ml olive oil, black peppercorns, small leeks washed and trimmed to 20cm long, butter cubed, flour, ml whole milk hot, parma ham slices, None  Gruyre or a similar cheese slices plus a handful of grated, hard-boiled eggs roughly chopped, slices of white bread made into breadcrumbs"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb40",
+        "title": "Lasagna Bolognese",
+        "image_url": "http://forkify-api.herokuapp.com/images/lasagnabolognese300x200c2d20aab.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/lasagna_bolognese/",
+        "cooking_time": 120,
+        "ingredients": "2  oz. diced pancetta finely chopped, 1  medium spanish onion or yellow onion finely chopped, 1  stalk celery finely chopped, 1  carrot finely chopped, 4 tbsps unsalted butter, 11 oz ground beef, 4 oz ground pork, 4 oz ground italian sausage, 1  freshly ground clove, None  Dash of freshly ground cinnamon, 1 tsp freshly ground black pepper, 2  lb peeled and chopped tomatoes, 1 cup whole milk, 0.5 tsp sea salt, 2 cups whole milk, 0.25 cup unsalted butter, 0.25 cup all-purpose unbleached flour, None  Enough lasagna noodles to make four layers in a 13x9-inch baking pan with the lasagna pieces overlapping each other a little bit., None  Recommended 16 sheets of de cecco brand italian lasagna noodles., 1 cup freshly grated parmesan cheese",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "oz. diced pancetta finely chopped, medium spanish onion or yellow onion finely chopped, stalk celery finely chopped, carrot finely chopped, unsalted butter, ground beef, ground pork, ground italian sausage, freshly ground clove, None  Dash of freshly ground cinnamon, freshly ground black pepper, lb peeled and chopped tomatoes, whole milk, sea salt, whole milk, unsalted butter, all-purpose unbleached flour, None  Enough lasagna noodles to make four layers in a 13x9-inch baking pan with the lasagna pieces overlapping each other a little bit., None  Recommended sheets of de cecco brand italian lasagna noodles., freshly grated parmesan cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc91e",
+        "title": "Lasagna Roll Ups",
+        "image_url": "http://forkify-api.herokuapp.com/images/2484452deb.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lasagna-Roll-Ups/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  package uncooked lasagna noodles, 1 pound mozzarella cheese shredded, 1  container ricotta cheese, 1 pound firm tofu, 1  package frozen chopped spinach - thawed drained and squeezed dry, 2 cups grated parmesan cheese, 1  jar pasta sauce",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "package uncooked lasagna noodles, pound mozzarella cheese shredded, container ricotta cheese, pound firm tofu, package frozen chopped spinach - thawed drained and squeezed dry, grated parmesan cheese, jar pasta sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcabc",
+        "title": "Lasagna Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/Lasagna2BSoup2B5002B050668ba78b8.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/01/lasagna-soup.html",
+        "cooking_time": 105,
+        "ingredients": "1 tbsp oil, 1 pound italian sausage casings removed, 1  onion diced, 2  cloves garlic chopped, 0.5 tsp red pepper flakes, 0.5 tsp fennel seeds crushed, 4 cups chicken broth, 1  can diced tomatoes, 2 tbsps tomato paste, 1 tsp oregano, 1  bay leaf, None  Salt and pepper to taste, 0.5 pound pasta, 4 oz ricotta, 0.5 cup parmesan grated, 2 cups mozzarella shredded, 1  handful basil chopped",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "oil, pound italian sausage casings removed, onion diced, cloves garlic chopped, red pepper flakes, fennel seeds crushed, chicken broth, can diced tomatoes, tomato paste, oregano, bay leaf, None  Salt and pepper to taste, pound pasta, ricotta, parmesan grated, mozzarella shredded, handful basil chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcca9",
+        "title": "Layered Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/4940301746_c16a4e7edf_o72c2.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/08/layered-salad/",
+        "cooking_time": 90,
+        "ingredients": "None  Salad:, 2  heads iceberg lettuce chopped, 8 oz fluid baby spinach washed and dried, None  Salt and pepper to taste, 8  whole hard boiled eggs chopped, 16 oz weight bacon cooked and chopped, 4  whole tomatoes chopped, 1  bunch green onions thinly sliced, 8 oz weight cheddar cheese grated, 1  bag frozen peas partially thawed, None  For the dressing:, 0.5 cup mayonnaise, 0.5 cup sour cream, 1 tbsp sugar, None  Fresh dill chopped",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "None  Salad:, heads iceberg lettuce chopped, fluid baby spinach washed and dried, None  Salt and pepper to taste, whole hard boiled eggs chopped, weight bacon cooked and chopped, whole tomatoes chopped, bunch green onions thinly sliced, weight cheddar cheese grated, bag frozen peas partially thawed, None  For the dressing:, mayonnaise, sour cream, sugar, None  Fresh dill chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc924",
+        "title": "Lazy Man's Pierogi",
+        "image_url": "http://forkify-api.herokuapp.com/images/127255f2fc.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lazy-Mans-Pierogi/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  package rotelle pasta, 0.5 pound bacon chopped, 2  onions chopped, 0.5 pound mushrooms quartered, 1 tbsp butter, 1  can sauerkraut - rinsed and drained, 2  cans condensed cream of mushroom soup, None  Salt and pepper to taste",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "package rotelle pasta, pound bacon chopped, onions chopped, pound mushrooms quartered, butter, can sauerkraut - rinsed and drained, cans condensed cream of mushroom soup, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc925",
+        "title": "Lazy Pierogi",
+        "image_url": "http://forkify-api.herokuapp.com/images/49305a14c.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lazy-Pierogi/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "3 pounds sauerkraut, 1  onion chopped, 1 pound uncooked rotini pasta, 1 pound fresh mushrooms chopped, 0.5 pound butter, 2  cans condensed cream of mushroom soup",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "sauerkraut, onion chopped, pound uncooked rotini pasta, pound fresh mushrooms chopped, pound butter, cans condensed cream of mushroom soup"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbf3",
+        "title": "Leafy No-Lettuce Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/3954805408.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Leafy-No-Lettuce-Salad-395480",
+        "cooking_time": 60,
+        "ingredients": "0.25 cup fresh lemon juice, 2 tbsps minced shallot, None  Kosher salt and freshly ground black pepper, 0.25 cup olive oil, 3  nectarines plums or peaches halved pitted thinly sliced, 1 cup almonds pistachios or hazelnuts toasted chopped, 1 cup crumbled blue cheese, 8 cups mixed leafy greens, 1.5 cups chervil sprigs, 1 cup assorted tender herb leaves",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "fresh lemon juice, minced shallot, None  Kosher salt and freshly ground black pepper, olive oil, nectarines plums or peaches halved pitted thinly sliced, almonds pistachios or hazelnuts toasted chopped, crumbled blue cheese, mixed leafy greens, chervil sprigs, assorted tender herb leaves"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc926",
+        "title": "Lean Green Smoothie",
+        "image_url": "http://forkify-api.herokuapp.com/images/963860c874.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lean-Green-Smoothie/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "3 cups honeydew melon - peeled seeded and cubed, 3 cups ice cubes, 1 cup green grapes, 1  cucumber peeled and chopped, 0.5 cup broccoli florets, 1  sprig fresh mint",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "honeydew melon - peeled seeded and cubed, ice cubes, green grapes, cucumber peeled and chopped, broccoli florets, sprig fresh mint"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0ac",
+        "title": "Lebanese Roasted Stuffed Onions",
+        "image_url": "http://forkify-api.herokuapp.com/images/moroccanstuffedonionsrecipefeatured1060200x15043d6.jpg",
+        "publisher": "Steamy Kitchen",
+        "source_url": "http://www.steamykitchen.com/25722-lebanese-roasted-stuffed-onions-recipe-video.html",
+        "cooking_time": 75,
+        "ingredients": "2  extra-large onions, 1 cup white rice, 1 tbsp tomato paste, 2 tsps cinnamon, 1 tsp allspice, 1 tsp ground cumin, 1 tsp ground coriander, 1.5 tsps kosher or sea salt, None  Freshly ground black pepper, 3 tbsps minced fresh cilantro or parsley, 1 pound ground meat of your choice, 2 tbsps white wine vinegar or cider vinegar, 3  pinches of sugar, 2 tbsps olive oil",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "extra-large onions, white rice, tomato paste, cinnamon, allspice, ground cumin, ground coriander, kosher or sea salt, None  Freshly ground black pepper, minced fresh cilantro or parsley, pound ground meat of your choice, white wine vinegar or cider vinegar, pinches of sugar, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc64",
+        "title": "Leftover Turkey Spring Rolls",
+        "image_url": "http://forkify-api.herokuapp.com/images/springrollsaef1.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/11/leftover-turkey-spring-rolls/",
+        "cooking_time": 75,
+        "ingredients": "None  Rice paper wrappers, None  Chunks of turkey, None  Soy sauce, None  Rice wine vinegar, None  Sesame oil, None  Chopped cilantro, None  Finely diced carrots, None  Strips of cucumber, None  Leafy lettuce, None  Alralfa or bean sprouts, None  Cellophane noodles",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "None  Rice paper wrappers, None  Chunks of turkey, None  Soy sauce, None  Rice wine vinegar, None  Sesame oil, None  Chopped cilantro, None  Finely diced carrots, None  Strips of cucumber, None  Leafy lettuce, None  Alralfa or bean sprouts, None  Cellophane noodles"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc65",
+        "title": "Leftover Turkey and Swiss Panini",
+        "image_url": "http://forkify-api.herokuapp.com/images/turkeypaninia190.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/11/leftover-turkey-and-swiss-panini/",
+        "cooking_time": 45,
+        "ingredients": "1.5 cups leftover turkey shredded, 0.5 cup leftover cranberry sauce, 0.25 cup chopped pecans, 2 tbsps fig or apricot jam, 4 tbsps dijon mustard, 8  slices swiss cheese, 8  slices sourdough or other bread, 8 tbsps butter",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "leftover turkey shredded, leftover cranberry sauce, chopped pecans, fig or apricot jam, dijon mustard, slices swiss cheese, slices sourdough or other bread, butter"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc8e7",
+        "title": "Lemon Blueberry Pudding Cookies",
+        "image_url": "http://forkify-api.herokuapp.com/images/LemonBlueberryPuddingCookies15b3e.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/lemon-blueberry-pudding-cookies/",
+        "cooking_time": 60,
+        "ingredients": "0.25 cup granulated sugar, None  Zest of 1 lemon, 1 cup unsalted butter at room temperature, 0.75 cup brown sugar, 1  package lemon instant pudding mix, 2  large eggs, 1 tsp vanilla extract, 2.5 cups all-purpose gold medal flour, 1 tsp baking soda, 0.5 tsp salt, 1 cup dried blueberries, 1 cup white chocolate chips",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "granulated sugar, None  Zest of emon, unsalted butter at room temperature, brown sugar, package lemon instant pudding mix, large eggs, vanilla extract, all-purpose gold medal flour, baking soda, salt, dried blueberries, white chocolate chips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdee",
+        "title": "Lemon Chicken Orzo Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/LemonChickenOrzoSoup33989.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/lemon-chicken-orzo-soup/",
+        "cooking_time": 75,
+        "ingredients": "1 tbsp olive oil, 1  medium onion diced, 2  cloves garlic minced, 2  carrots peeled and sliced into 1/4 inch thick, 1  celery stalk thinly sliced, 8 cups of chicken broth, None  Zest of 2 lemons, None  Juice of 2 lemons, 1  bay leaf, 1.5 cups orzo pasta, 2 cups cooked shredded chicken, 0.25 cup chopped fresh flat-leaf parsley leaves, None  Salt and pepper to taste",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "olive oil, medium onion diced, cloves garlic minced, carrots peeled and sliced into 1/inch thick, celery stalk thinly sliced, of chicken broth, None  Zest of emons, None  Juice of emons, bay leaf, orzo pasta, cooked shredded chicken, chopped fresh flat-leaf parsley leaves, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc928",
+        "title": "Lemon Poke Cake II",
+        "image_url": "http://forkify-api.herokuapp.com/images/250610d86d.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lemon-Poke-Cake-Ii/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  package yellow cake mix, 1  package instant lemon pudding mix, 0.75 cup water, 0.5 cup vegetable oil, 4  eggs, 0.33 cup lemon juice, 2 cups confectioners' sugar",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "package yellow cake mix, package instant lemon pudding mix, water, vegetable oil, eggs, lemon juice, confectioners' sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc929",
+        "title": "Lemon Pudding Poke Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/989704dcc0.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lemon-Pudding-Poke-Cake/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "1  package white cake mix, 2  egg whites, 1.33 cups water, 2 tbsps oil, 1  quart cold milk, 2  pkg. jell-o lemon flavor instant pudding & pie filling",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "package white cake mix, egg whites, water, oil, quart cold milk, pkg. jell-o lemon flavor instant pudding & pie filling"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce37",
+        "title": "Lemon Ricotta Blackberry Muffins",
+        "image_url": "http://forkify-api.herokuapp.com/images/lemonricottablackberrymuffinac00.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/lemon-ricotta-blackberry-muffins/",
+        "cooking_time": 90,
+        "ingredients": "2 cups all-purpose flour, 0.5 tsp baking powder, 0.5 tsp baking soda, 0.5 tsp salt, 1 cup granulated sugar, None  Zest of 2 lemons, 0.5 cup unsalted butter at room temperature, 1 cup ricotta cheese, 1  large egg, 1 tbsp fresh lemon juice, 1 tsp vanilla extract, 1 cup fresh blackberries, None  Turbinado sugar-for sprinkling on muffin tops",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "all-purpose flour, baking powder, baking soda, salt, granulated sugar, None  Zest of emons, unsalted butter at room temperature, ricotta cheese, large egg, fresh lemon juice, vanilla extract, fresh blackberries, None  Turbinado sugar-for sprinkling on muffin tops"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce39",
+        "title": "Lemon Ricotta Pancakes with Blueberry Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/lemonricottapancakerecipe6a37.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/lemon-ricotta-pancakes-with-blueberry-sauce/",
+        "cooking_time": 120,
+        "ingredients": "None  To make the blueberry sauce:, 1.5 tbsps fresh lemon juice, 1.5 tsps cornstarch, 2 cups fresh or frozen blueberries, 5 tbsps granulated sugar, 2 tbsps water, 1  in a small bowl combine the lemon juice and cornstarch and set aside., 2  in a medium saucepan combine the blueberries sugar and water. bring to a boil over high heat. reduce to a simmer and stir in lemon juice and cornstarch mixture. stir until the sauce thickens slightly.  cover to keep warm and set aside., None  To make the pancakes:, 1.25 cups all-purpose flour, 3 tbsps granulated sugar, 2 tsps baking powder, 0.5 tsp baking soda, 0.25 tsp salt, 1 cup ricotta cheese, 1  large egg, 2  large egg whites, 0.5 cup fresh lemon juice, 2 tsps grated lemon zest, 1 tbsp canola oil",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "None  To make the blueberry sauce:, fresh lemon juice, cornstarch, fresh or frozen blueberries, granulated sugar, water, in a small bowl combine the lemon juice and cornstarch and set aside., in a medium saucepan combine the blueberries sugar and water. bring to a boil over high heat. reduce to a simmer and stir in lemon juice and cornstarch mixture. stir until the sauce thickens slightly.  cover to keep warm and set aside., None  To make the pancakes:, all-purpose flour, granulated sugar, baking powder, baking soda, salt, ricotta cheese, large egg, large egg whites, fresh lemon juice, grated lemon zest, canola oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdcf",
+        "title": "Lemon Souffl&#233;s with Boysenberries",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_LemonSouffles_01_hc963.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2008/03/lemon_souffles_with_boysenberries",
+        "cooking_time": 75,
+        "ingredients": "6 tsps seedless boysenberry jam, 24  frozen boysenberries or blackberries, 2 tbsps finely grated lemon peel, 0.75 cup sugar divided, 1 tbsp cornstarch, 0.75 cup whole milk, 3  large eggs separated, 2 tbsps butter, 5 tbsps fresh lemon juice, None  Powdered sugar",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "seedless boysenberry jam, frozen boysenberries or blackberries, finely grated lemon peel, sugar divided, cornstarch, whole milk, large eggs separated, butter, fresh lemon juice, None  Powdered sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccfd",
+        "title": "Maple Buttermilk Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/maple_buttermilk_pie_recipe4db5.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/maple-buttermilk-pie-recipe.html",
+        "cooking_time": 45,
+        "ingredients": "None  Flaky rye pie dough, 75 g / v. scant 2/3 cup rye flour, 175 g / 1 1/2 cup unbleached all-purpose flour, 0.25 tsp fine grain sea salt, 8 oz / 1 cup salted butter, -0.08 cup / 60 - 80 ml cold water or beer",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "None  Flaky rye pie dough, / v. scant 2/rye flour, / 1/unbleached all-purpose flour, fine grain sea salt, / salted butter, -/ - ml cold water or beer"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bceaa",
+        "title": "Lemon fondant cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/1162669_MEDIUMe95c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1162669/lemon-fondant-cake",
+        "cooking_time": 75,
+        "ingredients": "350 g very soft butter, 350 g caster sugar plus 1 tbsp, 250 g self-raising flour, 3  eggs, 100 g ground almonds, 150 ml pot natural yogurt, 2  lemons zest and juice, 12 tbsps lemon curd, 500 g pack marzipan, 500 g fondant icing sugar sieved, None  Yellow pink and green food colouring",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "very soft butter, caster sugar plus , self-raising flour, eggs, ground almonds, ml pot natural yogurt, lemons zest and juice, lemon curd, pack marzipan, fondant icing sugar sieved, None  Yellow pink and green food colouring"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd31",
+        "title": "Lemony Chickpea Stir-fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/chickpea_stirfry_recipe85ab.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/lemony-chickpea-stirfry-recipe.html",
+        "cooking_time": 45,
+        "ingredients": "2 tbsps ghee or extra-virgin olive oil, None  Fine grain sea salt, 1  small onion or a couple shallots sliced, 1 cup cooked chickpeas, 8 oz extra-firm tofu, 1 cup of chopped kale, 2  small zucchini chopped, None  Zest and juice of 1/2 a lemon",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "ghee or extra-virgin olive oil, None  Fine grain sea salt, small onion or a couple shallots sliced, cooked chickpeas, extra-firm tofu, of chopped kale, small zucchini chopped, None  Zest and juice of 1/a lemon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccfc",
+        "title": "Lemony Olive Oil Banana Bread",
+        "image_url": "http://forkify-api.herokuapp.com/images/lemon_banana_bread_recipe3cab.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/lemony-olive-oil-banana-bread-recipe.html",
+        "cooking_time": 90,
+        "ingredients": "1 cup / 4.5 oz / 125g all-purpose flour, 1 cup / 5 oz / 140g whole wheat flour, 0.75 cup / 4.5 oz / 125 g dark muscovado or dark brown sugar, 0.75 tsp baking soda, 0.5 tsp kosher salt, 1 cup / 4 oz / 115 g coarsely chopped bittersweet chocolate, 0.33 cup / 80 ml extra-virgin olive oil, 2  large eggs lightly beaten, 1.5 cups / 12 oz / 340 g mashed very ripe bananas, 0.25 cup / 60 ml plain whole milk yogurt, 1 tsp freshly grated lemon zest, 1 tsp vanilla extract, None  For the glaze:, 0.5 cup / 3 oz / 85 g sifted dark muscovado or dark brown sugar, 0.5 cup / 2 oz / 55g confectioners' sugar, 4 tsps freshly squeezed lemon juice",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": " all-purpose flour, whole wheat flour, dark muscovado or dark brown sugar, baking soda, kosher salt,coarsely chopped bittersweet chocolate, ml extra-virgin olive oil, large eggs lightly beaten,mashed very ripe bananas, plain whole milk yogurt, freshly grated lemon zest, vanilla extract, None  For the glaze:,sifted dark muscovado or dark brown sugar,55g confectioners' sugar, freshly squeezed lemon juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf4f",
+        "title": "Lentil & bacon soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/2155646_MEDIUMebbc.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2155646/lentil-and-bacon-soup",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp olive oil, 1  onion diced, 2  x 70g packs pancetta cubes, 1  carrot finely diced, 1 tsp ground cumin, 1 tsp turmeric, 2  garlic cloves finely chopped, 1  chilli sliced, 2  low-salt stock cubes, 250 g red lentils rinsed",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "olive oil, onion diced, x 70g packs pancetta cubes, carrot finely diced, ground cumin, turmeric, garlic cloves finely chopped, chilli sliced, low-salt stock cubes, red lentils rinsed"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfe7",
+        "title": "Lentil rice salad with beetroot & feta dressing",
+        "image_url": "http://forkify-api.herokuapp.com/images/2360685_MEDIUMfeb6.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2360685/lentil-rice-salad-with-beetroot-and-feta-dressing",
+        "cooking_time": 60,
+        "ingredients": "2  beetroot peeled and cut into wedges, 100 g baby carrots, 2 tbsps sherry vinegar, 1 tsp dijon mustard, 1 tbsp extra-virgin olive oil, None  Small bunch mint few leaves picked and remaining chopped, None  Pinch of sugar, 250 g pouch cooked basmati rice, 400 g can cooked puy lentils drained and rinsed, 2 tbsps hazelnuts toasted and roughly chopped, 2 tbsps crumbled feta cheese",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "beetroot peeled and cut into wedges, baby carrots, sherry vinegar, dijon mustard, extra-virgin olive oil, None  Small bunch mint few leaves picked and remaining chopped, None  Pinch of sugar, pouch cooked basmati rice, can cooked puy lentils drained and rinsed, hazelnuts toasted and roughly chopped, crumbled feta cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd9c",
+        "title": "Lime & Blackberry Italian Meringue Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/limeblackberryitalianmeringuepie48439a5.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/08/lime-and-blackberry-italian-meringue-pie",
+        "cooking_time": 90,
+        "ingredients": "1 cup fresh lime juice, 3  large eggs, 3  large egg yolks, 0.75 cup sugar, 0.5 cup unsalted butter room temperature, 0.5 tsp unflavored gelatin, 0.75 cup chilled heavy cream, 1 cup fruity red wine such as shiraz or cabernet sauvignon, 0.5 cup sugar, 3 cups blackberries, 1  blind-baked pie crust in a 9\" deep-dish glass or metal pie pan, 3  large egg whites room temperature, 1 cup sugar, 2 tbsps corn syrup, 0.13 tsp kosher salt, 1 cup blackberries",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "fresh lime juice, large eggs, large egg yolks, sugar, unsalted butter room temperature, unflavored gelatin, chilled heavy cream, fruity red wine such as shiraz or cabernet sauvignon, sugar, blackberries, blind-baked pie crust in a 9\" deep-dish glass or metal pie pan, large egg whites room temperature, sugar, corn syrup, kosher salt, blackberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc97b",
+        "title": "Lime Chicken Soft Tacos",
+        "image_url": "http://forkify-api.herokuapp.com/images/6423132266.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lime-Chicken-Soft-Tacos/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "1.5 pounds skinless boneless chicken breast meat - cubed, 0.13 cup red wine vinegar, 1  lime juiced, 1 tsp white sugar, 0.5 tsp salt, 0.5 tsp ground black pepper, 2  green onions chopped, 2  cloves garlic minced, 1 tsp dried oregano, 10  flour tortillas, 1  tomato diced, 0.25 cup shredded lettuce, 0.25 cup shredded monterey jack cheese, 0.25 cup salsa",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "skinless boneless chicken breast meat - cubed, red wine vinegar, lime juiced, white sugar, salt, ground black pepper, green onions chopped, cloves garlic minced, dried oregano, flour tortillas, tomato diced, shredded lettuce, shredded monterey jack cheese, salsa"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcba8",
+        "title": "Linguine with Brussel Sprouts Barigoule",
+        "image_url": "http://forkify-api.herokuapp.com/images/351812bf81.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Linguine-with-Brussel-Sprouts-Barigoule-351812",
+        "cooking_time": 75,
+        "ingredients": "0.5 pound brussels sprouts trimmed and any discolored leaves discarded, 2  leeks, 0.75 pound savoy cabbage cored and sliced 1/4 inch thick, 3 tbsps extra-virgin olive oil divided, 3 tbsps unsalted butter divided, 4  garlic cloves finely chopped, 0.67 cup dry white wine, 4 cups water, 1 tbsp fresh lemon juice, 1 tsp fresh thyme leaves divided, 0.75 pound dried linguine, 0.25 cup chopped flat-leaf parsley, None  Accompaniments: extra-virgin olive oil for drizzling; grated parmesan",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "pound brussels sprouts trimmed and any discolored leaves discarded, leeks, pound savoy cabbage cored and sliced 1/inch thick, extra-virgin olive oil divided, unsalted butter divided, garlic cloves finely chopped, dry white wine, water, fresh lemon juice, fresh thyme leaves divided, pound dried linguine, chopped flat-leaf parsley, None  Accompaniments: extra-virgin olive oil for drizzling; grated parmesan"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc972",
+        "title": "Marinated Flank Steak",
+        "image_url": "http://forkify-api.herokuapp.com/images/870716f5.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Marinated-Flank-Steak/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "0.5 cup vegetable oil, 0.33 cup soy sauce, 0.25 cup red wine vinegar, 2 tbsps fresh lemon juice, 1.5 tbsps worcestershire sauce, 1 tbsp dijon mustard, 2  cloves garlic minced, 0.5 tsp ground black pepper, 1.5 pounds flank steak",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "vegetable oil, soy sauce, red wine vinegar, fresh lemon juice, worcestershire sauce, dijon mustard, cloves garlic minced, ground black pepper, flank steak"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd8f",
+        "title": "Linguine with Crab, Lemon, Chile, and Mint",
+        "image_url": "http://forkify-api.herokuapp.com/images/linguinewithcrablemonchileandmint4598b38.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/01/linguine-with-crab-lemon-chile-and-mint",
+        "cooking_time": 75,
+        "ingredients": "8 oz linguine, None  Kosher salt, 4 tbsps unsalted butter divided, 2 tbsps olive oil divided, 0.25 cup minced shallots, 1 tsp minced garlic, 1  fresno chiles red jalape&ntilde;os or red thai chiles seeded sliced into thin rounds, 1.5 tbsps fresh lemon juice divided plus 2 tsp finely grated lemon zest divided, None  Freshly ground black pepper, 8 oz cooked shelled dungeness crab king crab or jumbo lump crabmeat picked over for shells, 0.33 cup fresh mint leaves gently torn divided",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "linguine, None  Kosher salt, unsalted butter divided, olive oil divided, minced shallots, minced garlic, fresno chiles red jalape&ntilde;os or red thai chiles seeded sliced into thin rounds, fresh lemon juice divided plus finely grated lemon zest divided, None  Freshly ground black pepper, cooked shelled dungeness crab king crab or jumbo lump crabmeat picked over for shells, fresh mint leaves gently torn divided"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca04",
+        "title": "Little frosty Christmas cakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/2562_MEDIUMe1cc.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2562/little-frosty-christmas-cakes",
+        "cooking_time": 75,
+        "ingredients": "None  Butter for greasing, 1  quantity easy apple fruit cake uncooked, 2 tbsps apricot jam, 500 g pack natural marzipan, 500 g pack ready-to-roll white icing, 16  fresh cranberries, None  Bunch rosemary broken into small fronds, 50 g caster sugar, 1  egg white, 50 g icing sugar, None  Approx 1m gold ribbon",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "None  Butter for greasing, quantity easy apple fruit cake uncooked, apricot jam, pack natural marzipan, pack ready-to-roll white icing, fresh cranberries, None  Bunch rosemary broken into small fronds, caster sugar, egg white, icing sugar, None  Approx 1m gold ribbon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd41",
+        "title": "Lively Up Yourself Lentil Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/lentil_soup_recipe_0786c9.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/lively-up-yourself-lentil-soup-recipe.html",
+        "cooking_time": 60,
+        "ingredients": "2 cups black beluga lentils picked over and rinsed, 1 tbsp extra virgin olive oil, 1  large onion chopped, 1 tsp fine-grain sea salt, 1  28-oz can crushed tomatoes, 2 cups water, 3 cups of a big leafy green rinsed well deveined finely chopped, None  Saffron yogurt, None  A pinch of saffron, 1 tbsp boiling water, None  Two pinches of salt, 0.5 cup 2% greek yogurt",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "black beluga lentils picked over and rinsed, extra virgin olive oil, large onion chopped, fine-grain sea salt, 28-oz can crushed tomatoes, water, of a big leafy green rinsed well deveined finely chopped, None  Saffron yogurt, None  A pinch of saffron, boiling water, None  Two pinches of salt, 2% greek yogurt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf8d",
+        "title": "Loaded Veggie and Prosciutto Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/IMG_98428b96.jpg",
+        "publisher": "Whats Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/loaded-veggie-and-prosciutto-pizza/",
+        "cooking_time": 60,
+        "ingredients": "1  package store bought crust, 0.5 cup pesto, 1.5 cups sharp cheddar cheese, 10  brussels sprouts leaves removed, 1  handful cherry tomatoes halved, 1  red onion thinly sliced, 1  jar artichoke hearts drained and halved, 3 oz thinly sliced prosciutto, None  Salt and pepper to taste",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "package store bought crust, pesto, sharp cheddar cheese, brussels sprouts leaves removed, handful cherry tomatoes halved, red onion thinly sliced, jar artichoke hearts drained and halved, thinly sliced prosciutto, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd56",
+        "title": "Lobster Mac & Cheese Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/lobstermacncheesesaffronwinners90e4.jpg",
+        "publisher": "Steamy Kitchen",
+        "source_url": "http://www.steamykitchen.com/175-lobstermac.html",
+        "cooking_time": 75,
+        "ingredients": "None  Pasta, 0.5 cup butter + more for ramekin, 0.5 cup flour, 2 cups half and half, 2 tsps salt, 0.5 tsp nutmeg, 0.5 tsp cayenne, None  Pinch of ground black pepper, 3 cups sharp cheddar cheese shredded, 2 cups gruyere cheese shredded, 1  lb dried elbow pasta, None  Lobster, 0.33 cup panko breadcrumbs, 1  lb uncooked lobster meat chopped, 3  tbs grated parmesan",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "None  Pasta, butter + more for ramekin, flour, half and half, salt, nutmeg, cayenne, None  Pinch of ground black pepper, sharp cheddar cheese shredded, gruyere cheese shredded, lb dried elbow pasta, None  Lobster, panko breadcrumbs, lb uncooked lobster meat chopped, tbs grated parmesan"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc94e",
+        "title": "Lobster Mac and Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/973008931a.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lobster-Mac-And-Cheese/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1  package elbow macaroni, 1  lobster split, 2 tbsps butter, 1  small onion diced, 1  clove garlic minced, 1  shallot chopped, 10  black peppercorns, 2 cups milk, 5 tbsps butter, 5 tbsps all-purpose flour, 1 pound shredded gruyere cheese, 3 cups shredded cheddar cheese, 1 cup grated romano cheese, None  Kosher salt and pepper to taste, 3 tbsps panko bread crumbs",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "package elbow macaroni, lobster split, butter, small onion diced, clove garlic minced, shallot chopped, black peppercorns, milk, butter, all-purpose flour, pound shredded gruyere cheese, shredded cheddar cheese, grated romano cheese, None  Kosher salt and pepper to taste, panko bread crumbs"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc94f",
+        "title": "Lobster Pasta",
+        "image_url": "http://forkify-api.herokuapp.com/images/102079acb4.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lobster-Pasta/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1  large fresh lobster, 3 tbsps butter, 1  large onion chopped, 3  cloves garlic chopped, 1  can diced tomatoes, 4 tbsps olive oil, 4 tsps salt, 1 tsp ground black pepper, 1 tbsp ground cinnamon, 1 cup heavy cream, 1  package dried spaghetti, 1 tbsp butter, 1  clove garlic minced, 1  bunch fresh parsley chopped",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "large fresh lobster, butter, large onion chopped, cloves garlic chopped, can diced tomatoes, olive oil, salt, ground black pepper, ground cinnamon, heavy cream, package dried spaghetti, butter, clove garlic minced, bunch fresh parsley chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdd8",
+        "title": "Lobster Pasta with Herbed Cream Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_lobster_pasta_with_herbed_cream_sauce_h3bbc.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2004/12/lobster_pasta_with_herbed_cream_sauce",
+        "cooking_time": 75,
+        "ingredients": "3  1 3/4-pound live lobsters, 3 tbsps olive oil, 0.25 cup tomato paste, 2  large plum tomatos chopped, 0.33 cup dry white wine, 2 tbsps white wine vinegar, 2  garlic cloves sliced, 2  sprigs fresh tarragon sprigs, 2  fresh thyme sprigs, 2  fresh italian parsley sprigs, 2 cups whipping cream, 1.5 pounds fettucine or linguine",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "lobsters, olive oil, tomato paste, large plum tomatos chopped, dry white wine, white wine vinegar, garlic cloves sliced, sprigs fresh tarragon sprigs, fresh thyme sprigs, fresh italian parsley sprigs, whipping cream, fettucine or linguine"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf05",
+        "title": "Maple-Mustard Grilled Salmon Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29867_maple_grilled_salmon_6208d50.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29867-maple-mustard-grilled-salmon",
+        "cooking_time": 75,
+        "ingredients": "0.33 cup maple syrup, 3 tbsps whole-grain mustard, 1 tsp cider vinegar, 0.5 tsp finely chopped fresh thyme leaves, 0.13 tsp kosher salt, 0.13 tsp freshly ground black pepper, 4  salmon fillets skin on, None  Vegetable oil for oiling the grill and the fish, None  Kosher salt, None  Freshly ground black pepper",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "maple syrup, whole-grain mustard, cider vinegar, finely chopped fresh thyme leaves, kosher salt, freshly ground black pepper, salmon fillets skin on, None  Vegetable oil for oiling the grill and the fish, None  Kosher salt, None  Freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0bf",
+        "title": "Lobster Risotto Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29387_lobster_risotto_6203694.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29387-lobster-risotto",
+        "cooking_time": 90,
+        "ingredients": "1 tbsp kosher salt plus more as needed, 2  whole live lobsters, 2  1/2 quarts water plus more for steaming the lobsters, 6  whole black peppercorns, 1  small bay leaf, 1  medium leek washed and coarsely chopped, 0.25 cup olive oil plus more for drizzling, 1  medium yellow onion finely chopped, None  Freshly ground black pepper, 2 cups arborio or carnaroli rice, 1 cup dry white wine, 0.25 cup finely grated parmesan cheese plus more as needed, 0.33 cup minced fresh chives, None  Finely grated zest of 1 medium lemon, 1 tbsp freshly squeezed lemon juice plus more as needed",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "kosher salt plus more as needed, whole live lobsters, 1/quarts water plus more for steaming the lobsters, whole black peppercorns, small bay leaf, medium leek washed and coarsely chopped, olive oil plus more for drizzling, medium yellow onion finely chopped, None  Freshly ground black pepper, arborio or carnaroli rice, dry white wine, finely grated parmesan cheese plus more as needed, minced fresh chives, None  Finely grated zest of medium lemon, freshly squeezed lemon juice plus more as needed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc8d7",
+        "title": "Lobster Rolls Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29308_lobster_rolls_620f0f6.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29308-lobster-rolls",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp kosher salt plus more as needed, 2  whole live lobsters, 3  whole black peppercorns, 1  bay leaf, 1 cup water plus more for steaming the lobsters, 6 tbsps unsalted butter cut into 1/2-inch cubes and chilled, 1 tbsp finely chopped tarragon leaves, 1.5 tsps freshly squeezed lemon juice, None  Freshly ground black pepper, 2 tbsps unsalted butter softened, 4  top-split hot dog buns",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "kosher salt plus more as needed, whole live lobsters, whole black peppercorns, bay leaf, water plus more for steaming the lobsters, unsalted butter cut into 1/2-inch cubes and chilled, finely chopped tarragon leaves, freshly squeezed lemon juice, None  Freshly ground black pepper, unsalted butter softened, top-split hot dog buns"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfdd",
+        "title": "Lobster Salad Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29307_lobster_salad_3_620d877.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29307-lobster-salad",
+        "cooking_time": 75,
+        "ingredients": "1 tbsp kosher salt plus more as needed, 2  whole live lobsters, 3  whole black peppercorns, 1  bay leaf, 1 cup water plus more for steaming the lobsters, 6 tbsps unsalted butter cut into 1/2-inch cubes and chilled, 1 tbsp finely chopped tarragon leaves, 2.5 tsps freshly squeezed lemon juice, None  Freshly ground black pepper, 5 cups torn boston lettuce leaves washed and dried, 1.5 tbsps extra-virgin olive oil",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "kosher salt plus more as needed, whole live lobsters, whole black peppercorns, bay leaf, water plus more for steaming the lobsters, unsalted butter cut into 1/2-inch cubes and chilled, finely chopped tarragon leaves, freshly squeezed lemon juice, None  Freshly ground black pepper, torn boston lettuce leaves washed and dried, extra-virgin olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc954",
+        "title": "Luscious Lemon Poke Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/9856960063.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Luscious-Lemon-Poke-Cake-2/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "2  baked round white cake layers cooled, 2 cups boiling water, 2  packages jell-o brand lemon flavor gelatin, 1 cup cold milk, 1  package jell-o lemon flavor instant pudding & pie filling, 3 cups thawed cool whip whipped topping",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "baked round white cake layers cooled, boiling water, packages jell-o brand lemon flavor gelatin, cold milk, package jell-o lemon flavor instant pudding & pie filling, thawed cool whip whipped topping"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd046",
+        "title": "Lychee & pear martinis",
+        "image_url": "http://forkify-api.herokuapp.com/images/421617_MEDIUMcdc0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/421617/lychee-and-pear-martinis",
+        "cooking_time": 30,
+        "ingredients": "180 ml absolut pears vodka chilled, 2  tins lychees drained",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "ml absolut pears vodka chilled, tins lychees drained"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc1c",
+        "title": "Lychees in Scented Syrup",
+        "image_url": "http://forkify-api.herokuapp.com/images/recipe139335ce.jpg",
+        "publisher": "Cookstr",
+        "source_url": "http://www.cookstr.com/recipes/lychees-in-scented-syrup",
+        "cooking_time": 30,
+        "ingredients": "0.33 cup demerara or turbinado sugar, None  Grated zest and juice of 1 lime, 1  whole star anise, 1  lb 5oz lychees, 2  pieces of stem ginger in syrup chopped",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "demerara or turbinado sugar, None  Grated zest and juice of ime, whole star anise, lb 5oz lychees, pieces of stem ginger in syrup chopped"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0af",
+        "title": "Mac and Cheese with Roasted Chicken, Goat Cheese, and Rosemary",
+        "image_url": "http://forkify-api.herokuapp.com/images/MacandCheese1122b.jpg",
+        "publisher": "My Baking Addiction",
+        "source_url": "http://www.mybakingaddiction.com/mac-and-cheese-roasted-chicken-and-goat-cheese/",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp vegetable oil, 1 pound dried rigatoni, 1  quart heavy cream, 2 tbsps chopped fresh rosemary, 1  clove fresh garlic crushed, 8 oz goat cheese, 2 cups shredded roasted chicken",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "vegetable oil, pound dried rigatoni, quart heavy cream, chopped fresh rosemary, clove fresh garlic crushed, goat cheese, shredded roasted chicken"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd48",
+        "title": "Macaroni Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/macaroni_salad_recipeeef3.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/macaroni-salad-recipe.html",
+        "cooking_time": 60,
+        "ingredients": "1 pound elbow macaroni, 0.25 cup / 60 ml extra virgin olive oil, 4 cups thinly sliced green onions {~3-4 bunches}, 3  medium cloves garlic chopped, None  Fine grain sea salt, None  Lots of freshly ground black pepper, None  Zest and juice of one lemon, 0.33 cup / 2 oz grated parmesan, 4  big handfuls arugula, 1  large apple diced",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "pound elbow macaroni, / ml extra virgin olive oil, thinly sliced green onions {~3-es}, medium cloves garlic chopped, None  Fine grain sea salt, None  Lots of freshly ground black pepper, None  Zest and juice of one lemon, / grated parmesan, big handfuls arugula, large apple diced"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd07b",
+        "title": "Make Your Own Ice Cream ConesOn a Panini Press!",
+        "image_url": "http://forkify-api.herokuapp.com/images/Strawberrryicecreamcone250f41f.jpg",
+        "publisher": "Panini Happy",
+        "source_url": "http://paninihappy.com/make-your-own-ice-cream-cones-on-a-panini-press/",
+        "cooking_time": 60,
+        "ingredients": "1 cup heavy cream, 1.5 tsps vanilla extract, 1.5 cups powdered sugar, 1.5 cups all-purpose flour, 0.25 tsp ground cinnamon, None  Pinch ground nutmeg, 1 tbsp cornstarch",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "heavy cream, vanilla extract, powdered sugar, all-purpose flour, ground cinnamon, None  Pinch ground nutmeg, cornstarch"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc96c",
+        "title": "Malasadas (Hawaiian Style Donuts)",
+        "image_url": "http://forkify-api.herokuapp.com/images/Malasadas1743.JPG",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/breakfastbrunch/malasadas-hawaiian-style-donuts/",
+        "cooking_time": 75,
+        "ingredients": "3 cups 3 cups, 1 cup cups, 1 tsp tsps, 1  whole 1 whole, 1 oz weight ozs weight, 1 cup cups, 4  whole 4 whole, 1 cup 1 cup, 2 tbsps 2 tbsps, 1 cup cups",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": ", cups, tsps, whole whole, weight ozs weight, cups, whole whole, , , cups"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc92c",
+        "title": "Marie's Lentil Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/1997443c50.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Lentil-Soup/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "1  onion chopped, 0.25 cup olive oil, 2  carrots diced, 2  stalks celery chopped, 2  cloves garlic minced, 1 tsp dried oregano, 1  bay leaf, 1 tsp dried basil, 1  can crushed tomatoes, 2 cups dry lentils, 8 cups water, 0.5 cup spinach rinsed and thinly sliced, 2 tbsps vinegar, None  Salt to taste, None  Ground black pepper to taste",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "onion chopped, olive oil, carrots diced, stalks celery chopped, cloves garlic minced, dried oregano, bay leaf, dried basil, can crushed tomatoes, dry lentils, water, spinach rinsed and thinly sliced, vinegar, None  Salt to taste, None  Ground black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc95d",
+        "title": "Malaysian Beef Rendang",
+        "image_url": "http://forkify-api.herokuapp.com/images/27953385de.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Malaysian-Beef-Rendang/Detail.aspx",
+        "cooking_time": 105,
+        "ingredients": "0.38 pound shallots, 3  cloves garlic, 15  dried red chile peppers, 5  slices fresh ginger root, 5  lemon grass chopped, 2 tsps coriander seeds, 2 tsps fennel seeds, 2 tsps cumin seeds, 1  pinch grated nutmeg, 1 tbsp vegetable oil, 1.25 pounds beef stew meat cut into 1 inch cubes, 1.5 tbsps white sugar, 2 cups shredded coconut, 5  whole cloves, 1  cinnamon stick, 1.67 cups coconut milk, 0.88 cup water, None  Salt to taste",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "pound shallots, cloves garlic, dried red chile peppers, slices fresh ginger root, lemon grass chopped, coriander seeds, fennel seeds, cumin seeds, pinch grated nutmeg, vegetable oil, beef stew meat cut into inch cubes, white sugar, shredded coconut, whole cloves, cinnamon stick, coconut milk, water, None  Salt to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcebf",
+        "title": "Malted Vanilla Ice Cream with Peanut Brittle and Milk Chocolate Pieces",
+        "image_url": "http://forkify-api.herokuapp.com/images/51100020549e.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Malted-Vanilla-Ice-Cream-with-Peanut-Brittle-and-Milk-Chocolate-Pieces-51100020",
+        "cooking_time": 60,
+        "ingredients": "5  large egg yolks, 0.5 cup malted milk powder, 1.75 cups heavy cream, 0.75 cup 1% or 2% milk, 0.5 cup sugar, 0.25 tsp kosher salt, 2 oz milk chocolate finely chopped or grated, 1 tsp vanilla extract, 0.5 cup chopped, None  In 1/8-inch pieces, None  Ice cream machine",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "large egg yolks, malted milk powder, heavy cream, 1% or 2% milk, sugar, kosher salt, milk chocolate finely chopped or grated, vanilla extract, chopped, None  In 1/8-inch pieces, None  Ice cream machine"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc960",
+        "title": "Mandarin Chicken Roll-Ups",
+        "image_url": "http://forkify-api.herokuapp.com/images/168153933.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Mandarin-Chicken-Roll-Ups/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "4  skinless boneless chicken breasts, None  Salt and pepper to taste, 4  flour tortillas, 1  package neufchatel cheese, 1  can mandarin oranges drained, 1  can pineapple tidbits drained, 2  green onions chopped, 0.5 cup diced red bell pepper, 0.5 cup salted cashews chopped",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "skinless boneless chicken breasts, None  Salt and pepper to taste, flour tortillas, package neufchatel cheese, can mandarin oranges drained, can pineapple tidbits drained, green onions chopped, diced red bell pepper, salted cashews chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce53",
+        "title": "Mandarin Orange Ice Cream with Sesame Brittle",
+        "image_url": "http://forkify-api.herokuapp.com/images/351911b7b1.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Mandarin-Orange-Ice-Cream-with-Sesame-Brittle-351911",
+        "cooking_time": 75,
+        "ingredients": "3 cups heavy cream, 3 cups fresh mandarin orange or clementine juice, 6  large egg yolks, 0.75 cup sugar, 0.33 cup mild honey, 0.5 tbsp grated mandarin orange or clementine zest, 0.67 cup white sesame seeds, 0.5 cup black sesame seeds, 0.67 cup sugar, 3 tbsps mild honey, None  Equipment: an ice cream maker",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "heavy cream, fresh mandarin orange or clementine juice, large egg yolks, sugar, mild honey, grated mandarin orange or clementine zest, white sesame seeds, black sesame seeds, sugar, mild honey, None  Equipment: an ice cream maker"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfe4",
+        "title": "Mango & passion fruit fool",
+        "image_url": "http://forkify-api.herokuapp.com/images/518642_MEDIUM6e70.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/518642/mango-and-passion-fruit-fool",
+        "cooking_time": 30,
+        "ingredients": "2  large ripe mangoes, 4  passion fruits halved, 2  x 150g/5oz tubs greek yogurt, None  Juice 1 lime",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "large ripe mangoes, passion fruits halved, x 150g/5oz tubs greek yogurt, None  Juice ime"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf5c",
+        "title": "Mango & passion fruit pavlova roulade",
+        "image_url": "http://forkify-api.herokuapp.com/images/1101_MEDIUM611c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1101/mango-and-passion-fruit-pavlova-roulade",
+        "cooking_time": 75,
+        "ingredients": "2 tsps cornflour, 2 tsps instant coffee, 2 tsps white wine vinegar or cider vinegar, 5  egg whites, 200 g golden caster sugar, None  Small handful of pistachios sliced lengthways, 1  small mango, 250 g carton mascarpone, 148 ml carton double cream, 1  passion fruit, None  Icing sugar for sifting",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "cornflour, instant coffee, white wine vinegar or cider vinegar, egg whites, golden caster sugar, None  Small handful of pistachios sliced lengthways, small mango, carton mascarpone, ml carton double cream, passion fruit, None  Icing sugar for sifting"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc921",
+        "title": "Mango & passion fruit smoothie",
+        "image_url": "http://forkify-api.herokuapp.com/images/2364642_MEDIUMe4a0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2364642/mango-and-passion-fruit-smoothie",
+        "cooking_time": 30,
+        "ingredients": "400 oz peeled and chopped ripe mango, 2  x 125g pots fat-free mango yogurt, 250 ml skimmed milk, None  Juice 1 lime, 4  passion fruits halved",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "peeled and chopped ripe mango, x 125g pots fat-free mango yogurt, ml skimmed milk, None  Juice ime, passion fruits halved"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb41",
+        "title": "Mango Chicken Curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/mangochickencurry520a300x20005b28403.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/mango_chicken_curry/",
+        "cooking_time": 75,
+        "ingredients": "2 tbsps vegetable oil, 1  large onion chopped, 1  red bell pepper chopped, 2  garlic cloves minced, 2 tbsps fresh minced ginger, 2 tbsps yellow curry powder, 0.5 tsp ground cumin, 2  mangos peeled and diced, 2 tbsps cider vinegar or white vinegar, 14.5 oz can coconut milk, 1.25 pounds skinless boneless chicken thighs or breasts cut into 1-inch pieces, 0.33 cup golden raisins, None  Salt and pepper, None  Cilantro for garnish",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "vegetable oil, large onion chopped, red bell pepper chopped, garlic cloves minced, fresh minced ginger, yellow curry powder, ground cumin, mangos peeled and diced, cider vinegar or white vinegar, can coconut milk, skinless boneless chicken thighs or breasts cut into 1-inch pieces, golden raisins, None  Salt and pepper, None  Cilantro for garnish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc967",
+        "title": "Mango Papaya Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/1508184e2.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Mango-Papaya-Salsa/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  mango - peeled seeded and diced, 1  papaya - peeled seeded and diced, 1  large red bell pepper seeded and diced, 1  avocado - peeled pitted and diced, 1  sweet onion peeled and diced, 2 tbsps chopped fresh cilantro, 2 tbsps balsamic vinegar, None  Salt and pepper to taste",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "mango - peeled seeded and diced, papaya - peeled seeded and diced, large red bell pepper seeded and diced, avocado - peeled pitted and diced, sweet onion peeled and diced, chopped fresh cilantro, balsamic vinegar, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcabd",
+        "title": "Maple Bourbon Bacon Jam",
+        "image_url": "http://forkify-api.herokuapp.com/images/Maple2BBourbon2BBacon2BJam2B8002B4267ded4f5a7.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/08/maple-bourbon-bacon-jam.html",
+        "cooking_time": 60,
+        "ingredients": "1 pound thick smoked bacon cut into 1 inch pieces, 1  large onion sliced, 4  cloves garlic chopped, 0.25 cup cider vinegar, 0.75 cup coffee, 0.25 cup brown sugar, 0.25 cup maple syrup, 0.25 cup bourbon, 1  chipotle chilis in adobo chopped, 0.5 tsp cumin, None  Pepper to taste",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "pound thick smoked bacon cut into inch pieces, large onion sliced, cloves garlic chopped, cider vinegar, coffee, brown sugar, maple syrup, bourbon, chipotle chilis in adobo chopped, cumin, None  Pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc96f",
+        "title": "Marinated Baked Pork Chops",
+        "image_url": "http://forkify-api.herokuapp.com/images/3878936fda.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Marinated-Baked-Pork-Chops/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp soy sauce, 2 tbsps vegetable oil, 1 tbsp worcestershire sauce, 1 tsp lemon juice, 2 tbsps brown sugar, 2 tbsps ketchup, 6  pork chops trimmed",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "soy sauce, vegetable oil, worcestershire sauce, lemon juice, brown sugar, ketchup, pork chops trimmed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaab",
+        "title": "Marinated beetroot with grilled goat's cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/711660_MEDIUMb240.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/711660/marinated-beetroot-with-grilled-goats-cheese",
+        "cooking_time": 45,
+        "ingredients": "6 tbsps olive oil plus extra for greasing, 3 tbsps red wine vinegar, 1 tsp sugar, 1 tsp thyme leaves, 4  raw beetroot peeled and very thinly sliced on a mandoline or with a food processor slicing attachment, 2  x 100g vegetarian goat's cheese rounds with rind halved horizontally, 4  handfuls rocket",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "olive oil plus extra for greasing, red wine vinegar, sugar, thyme leaves, raw beetroot peeled and very thinly sliced on a mandoline or with a food processor slicing attachment, x 100g vegetarian goat's cheese rounds with rind halved horizontally, handfuls rocket"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd076",
+        "title": "Marmalade Ice Cream",
+        "image_url": "http://forkify-api.herokuapp.com/images/511492800ca3.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Marmalade-Ice-Cream-51149280",
+        "cooking_time": 45,
+        "ingredients": "3 cups heavy cream, 1 cup whole milk, 0.5 cup sugar, 1  vanilla bean split lengthwise, 8  large egg yolks, 0.5 cup prepared orange marmalade, None  An ice cream maker",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "heavy cream, whole milk, sugar, vanilla bean split lengthwise, large egg yolks, prepared orange marmalade, None  An ice cream maker"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcefb",
+        "title": "Marmite on toast",
+        "image_url": "http://forkify-api.herokuapp.com/images/982114_mediume246.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1505633/marmite-on-toast",
+        "cooking_time": 30,
+        "ingredients": "None  Marmite, None  Bread, None  Butter, None  Bay leaf",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "None  Marmite, None  Bread, None  Butter, None  Bay leaf"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc977",
+        "title": "Maryland Crab Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/9214710d4e.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Maryland-Crab-Soup/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "2  cans stewed tomatoes, 3 cups water, 1 cup fresh lima beans, 1 cup frozen corn kernels, 1 cup sliced carrots, 2 tbsps chopped onion, 2 tbsps old bay seasoning tm, 2 cups beef broth, 1 pound blue crab crabmeat, 10  blue crab claws steamed, 1  gallon water",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "cans stewed tomatoes, water, fresh lima beans, frozen corn kernels, sliced carrots, chopped onion, old bay seasoning tm, beef broth, pound blue crab crabmeat, blue crab claws steamed, gallon water"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce5f",
+        "title": "Masala chicken pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/2865665_MEDIUM71a6.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2865665/masala-chicken-pie",
+        "cooking_time": 120,
+        "ingredients": "2 tbsps vegetable oil, 4  skinless chicken breasts, 2  onions chopped, None  Finger-length piece ginger grated, 3  garlic cloves crushed, 2 tbsps medium curry powder, 2 tsps ground coriander, 2 tsps ground cumin, 2 tsps black or brown mustard seeds, 2 tsps white or red wine vinegar, 2 tsps sugar, 2  x 400g cans chopped tomatoes, 150 ml light coconut milk, 1  large red pepper deseeded and cut into large chunks, 1  large green pepper deseeded and cut into large chunks, None  A small bunch coriander leaves roughly chopped stalks reserved, 1 g floury potatoes cut into very large chunks, 150 ml light coconut milk, 1 tsp turmeric, None  Juice 1 lemon, 1  bunch spring onions finely chopped, None  Stalks from a small bunch coriander finely chopped, 1 tsp kalonji seeds, None  Naan bread to serve",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "vegetable oil, skinless chicken breasts, onions chopped, None  Finger-length piece ginger grated, garlic cloves crushed, medium curry powder, ground coriander, ground cumin, black or brown mustard seeds, white or red wine vinegar, sugar, x 400g cans chopped tomatoes, ml light coconut milk, large red pepper deseeded and cut into large chunks, large green pepper deseeded and cut into large chunks, None  A small bunch coriander leaves roughly chopped stalks reserved, floury potatoes cut into very large chunks, ml light coconut milk, turmeric, None  Juice emon, bunch spring onions finely chopped, None  Stalks from a small bunch coriander finely chopped, kalonji seeds, None  Naan bread to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfbc",
+        "title": "Mashed Cauliflower",
+        "image_url": "http://forkify-api.herokuapp.com/images/mashedcauliflowerDSC_8643641b.jpg",
+        "publisher": "Elana's Pantry",
+        "source_url": "http://www.elanaspantry.com/mashed-cauliflower/",
+        "cooking_time": 30,
+        "ingredients": "2  heads cauliflower washed and cut into large pieces, 2 tbsps earth balance natural buttery spread or olive oil, 1 tsp celtic sea salt",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "heads cauliflower washed and cut into large pieces, earth balance natural buttery spread or olive oil, celtic sea salt"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd03c",
+        "title": "Massaman curry roast chicken",
+        "image_url": "http://forkify-api.herokuapp.com/images/10586_MEDIUM7b5e.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/10586/massaman-curry-roast-chicken",
+        "cooking_time": 90,
+        "ingredients": "None  Whole chicken about 1.8kg, None  Two thumb-size pieces root ginger, 1  stick lemongrass bashed with a rolling pin, 1  lime cut into quarters, 70 oz pack massaman curry paste, 1 tsp olive oil, 450 g baby new potatoes any larger ones halved, 400 ml oz can coconut milk, 1 tsp brown sugar any type, 200 g green beans trimmed, 1 tsp fish sauce, 2 tbsps unsalted peanuts crushed, None  Basmati rice to serve",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "None  Whole chicken about 1.8kg, None  Two thumb-size pieces root ginger, stick lemongrass bashed with a rolling pin, lime cut into quarters, pack massaman curry paste, olive oil, baby new potatoes any larger ones halved, ml oz can coconut milk, brown sugar any type, green beans trimmed, fish sauce, unsalted peanuts crushed, None  Basmati rice to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc9c",
+        "title": "Meatballs with Peppers and Pineapple",
+        "image_url": "http://forkify-api.herokuapp.com/images/5301946098_b8bf24c98e_od391.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/12/meatballs-with-peppers-and-pineapple/",
+        "cooking_time": 105,
+        "ingredients": "1.25 pounds ground beef, 1  whole onion diced very finely, 1  whole egg, 0.5 cup panko bread crumbs, 1 tsp kosher salt, None  Freshly ground black pepper to taste, 0.5 tsp crushed red pepper more to taste, 0.25 cup all-purpose flour, None  Canola oil for frying, 2  whole green bell peppers seeded and diced roughly, 1.5 cups fresh pineapple chunks, 2 cups beef stock or broth, 2 tbsps soy sauce, 0.5 cup sherry or white wine vinegar, 0.33 cup sugar, 1 tbsp cornstarch, None  Salt to taste, None  Crushed red pepper to taste, None  Extra beef stock if needed",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "ground beef, whole onion diced very finely, whole egg, panko bread crumbs, kosher salt, None  Freshly ground black pepper to taste, crushed red pepper more to taste, all-purpose flour, None  Canola oil for frying, whole green bell peppers seeded and diced roughly, fresh pineapple chunks, beef stock or broth, soy sauce, sherry or white wine vinegar, sugar, cornstarch, None  Salt to taste, None  Crushed red pepper to taste, None  Extra beef stock if needed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcba3",
+        "title": "Mediterranean Beef Pitas",
+        "image_url": "http://forkify-api.herokuapp.com/images/tenbeefpitas_3005f95959e.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/mediterranean-beef-pitas-00000000027588/index.html",
+        "cooking_time": 45,
+        "ingredients": "1 pound ground beef, 1.5 tsps dried oregano, 2 tbsps kosher salt and black pepper, 4  olive oil, 0.75 cup pocketless pitas, 1  store-bought hummus, 2 tbsps small red onion sliced, 1  fresh flat-leaf parsley",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "pound ground beef, dried oregano, kosher salt and black pepper, olive oil, pocketless pitas, store-bought hummus, small red onion sliced, fresh flat-leaf parsley"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc987",
+        "title": "Microwave Caramel Popcorn",
+        "image_url": "http://forkify-api.herokuapp.com/images/263612a5df.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Microwave-Caramel-Popcorn/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "4  quarts popped popcorn, 1 cup brown sugar, 0.5 cup margarine, 0.25 cup light corn syrup, 0.5 tsp salt, 1 tsp vanilla extract, 0.5 tsp baking soda",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "quarts popped popcorn, brown sugar, margarine, light corn syrup, salt, vanilla extract, baking soda"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd01a",
+        "title": "Mediterranean fig & mozzarella salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/1511721_MEDIUM2ed6.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1511721/mediterranean-fig-and-mozzarella-salad",
+        "cooking_time": 45,
+        "ingredients": "200 g fine green beans trimmed, 6  small figs quartered, 1  shallot thinly sliced, 1  x 125g ball mozzarella drained and ripped into chunks, 50 g hazelnuts toasted and chopped, None  Small handful basil leaves torn, 3 tbsps balsamic vinegar, 1 tbsp figs jam or relish, 3 tbsps extra-virgin olive oil",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "fine green beans trimmed, small figs quartered, shallot thinly sliced, x 125g ball mozzarella drained and ripped into chunks, hazelnuts toasted and chopped, None  Small handful basil leaves torn, balsamic vinegar, figs jam or relish, extra-virgin olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce8e",
+        "title": "Melon and Nectarines with Parma Ham",
+        "image_url": "http://forkify-api.herokuapp.com/images/recipe12108255.jpg",
+        "publisher": "Cookstr",
+        "source_url": "http://www.cookstr.com/recipes/melon-and-nectarines-with-parma-ham",
+        "cooking_time": 30,
+        "ingredients": "None  &frac12; small honeydew melon, 4  nectarines stoned, 8 oz thinly sliced parma ham, None  Freshly ground black pepper, None  Wooden toothpicks",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "None  &frac12; small honeydew melon, nectarines stoned, thinly sliced parma ham, None  Freshly ground black pepper, None  Wooden toothpicks"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd029",
+        "title": "Melon and Proscuitto Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/MelonandProscuittoSalad6c49.jpg",
+        "publisher": "Whats Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/melon-and-proscuitto-salad/",
+        "cooking_time": 60,
+        "ingredients": "3 cups cubed honeydew melon, 3 cups cubed cantaloupe, 2 tbsps thinly torn fresh mint, 1 tsp fresh lemon juice, 7 oz thinly sliced prosciutto sliced into thin strips, None  Freshly ground black pepper to taste, None  Instructionscombine the honeydew cantaloupe mint and lemon juice in a large bowl and toss to combine.",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "cubed honeydew melon, cubed cantaloupe, thinly torn fresh mint, fresh lemon juice, thinly sliced prosciutto sliced into thin strips, None  Freshly ground black pepper to taste, None  Instructionscombine the honeydew cantaloupe mint and lemon juice in a large bowl and toss to combine."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc983",
+        "title": "Melted Brie and Apricot Petite Croissants",
+        "image_url": "http://forkify-api.herokuapp.com/images/9888352734.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Melted-Brie-And-Apricot-Petite-Croissants/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "6  small croissants, 5 oz wedge of brie rind removed cut into 1/4-inch slices, 3 tbsps smucker's&#174; apricot preserves, 3 tbsps glazed pecans* chopped, 3 tsps dark brown sugar, None  Crisco&#174; butter flavor no-stick cooking spray, None  Cinnamon sugar if desired",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "small croissants, wedge of brie rind removed cut into 1/4-inch slices, smucker's&#174; apricot preserves, glazed pecans* chopped, dark brown sugar, None  Crisco&#174; butter flavor no-stick cooking spray, None  Cinnamon sugar if desired"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc984",
+        "title": "Mexican Bean Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/3985789aed.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Mexican-Bean-Salad/Detail.aspx",
+        "cooking_time": 105,
+        "ingredients": "1  can black beans rinsed and drained, 1  can kidney beans drained, 1  can cannellini beans drained and rinsed, 1  green bell pepper chopped, 1  red bell pepper chopped, 1  package frozen corn kernels, 1  red onion chopped, 0.5 cup olive oil, 0.5 cup red wine vinegar, 2 tbsps fresh lime juice, 1 tbsp lemon juice, 2 tbsps white sugar, 1 tbsp salt, 1  clove crushed garlic, 0.25 cup chopped fresh cilantro, 0.5 tbsp ground cumin, 0.5 tbsp ground black pepper, 1  dash hot pepper sauce, 0.5 tsp chili powder",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "can black beans rinsed and drained, can kidney beans drained, can cannellini beans drained and rinsed, green bell pepper chopped, red bell pepper chopped, package frozen corn kernels, red onion chopped, olive oil, red wine vinegar, fresh lime juice, lemon juice, white sugar, salt, clove crushed garlic, chopped fresh cilantro, ground cumin, ground black pepper, dash hot pepper sauce, chili powder"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcda6",
+        "title": "Mexican Chocolate Ice Cream Cake with Orange Meringue",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_mexican_chocolate_ice_cream_cake_with_orange_meringue_h9c39.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2010/08/mexican_chocolate_ice_cream_cake_with_orange_meringue",
+        "cooking_time": 135,
+        "ingredients": "None  Nonstick vegetable oil spray, 0.33 cup all purpose flour, 0.5 tsp ground cinnamon, 0.25 tsp baking powder, None  Pinch of salt, 6 tbsps unsalted butter cut into 4 pieces, 0.33 cup natural unsweetened cocoa powder, 0.75 cup sugar, 1  large egg, 0.5 tsp vanilla extract, 12 oz bittersweet chocolate chopped, 2.75 cups half and half divided, 6  large egg yolks, 0.67 cup sugar, 0.5 tsp ground cinnamon, None  Pinch of salt, 4  large egg whites room temperature, 0.5 tsp cream of tartar, None  Pinch of salt, 0.5 cup sugar, 2 tsps finely grated orange peel, 9  springform pan with 3-inch-high sides, None  Candy thermometer, None  Ice cream maker, None  Kitchen torch",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "None  Nonstick vegetable oil spray, all purpose flour, ground cinnamon, baking powder, None  Pinch of salt, unsalted butter cut into pieces, natural unsweetened cocoa powder, sugar, large egg, vanilla extract, bittersweet chocolate chopped, half and half divided, large egg yolks, sugar, ground cinnamon, None  Pinch of salt, large egg whites room temperature, cream of tartar, None  Pinch of salt, sugar, finely grated orange peel, springform pan with 3-inch-high sides, None  Candy thermometer, None  Ice cream maker, None  Kitchen torch"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc944",
+        "title": "Mexican bean burgers with lime yogurt & salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/9978_MEDIUM0908.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/9978/mexican-bean-burgers-with-lime-yogurt-and-salsa",
+        "cooking_time": 45,
+        "ingredients": "2  x 400g/14oz cans kidney beans rinsed and drained, 100 g breadcrumbs, 2 tsps mild chilli powder, None  Small bunch coriander stalks and leaves chopped, 1  egg, 200 g tub fresh salsa, 150 ml low-fat natural yogurt, None  Juice lime, 6  wholemeal burger buns sliced avocado sliced red onion and salad leaves to serve",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "x 400g/14oz cans kidney beans rinsed and drained, breadcrumbs, mild chilli powder, None  Small bunch coriander stalks and leaves chopped, egg, tub fresh salsa, ml low-fat natural yogurt, None  Juice lime, wholemeal burger buns sliced avocado sliced red onion and salad leaves to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccb2",
+        "title": "Mexican “Flatbread” Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/4797377235_c07589b7d4_be953.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/07/16-minute-meal-4-mexican-flatbread-pizza/",
+        "cooking_time": 60,
+        "ingredients": "1  can large biscuits, 1  whole can refried beans, 3 tbsps salsa or picante sauce, 1.5 cups grated cheddar cheese, None  Pico de gallo, 2 cups browned hamburger meat seasoned, None  Shredded iceberg lettuce, 3 tbsps salsa, 5 tbsps sour cream, None  Cilantro for garnish",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "can large biscuits, whole can refried beans, salsa or picante sauce, grated cheddar cheese, None  Pico de gallo, browned hamburger meat seasoned, None  Shredded iceberg lettuce, salsa, sour cream, None  Cilantro for garnish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce1b",
+        "title": "Meyer Lemon Pudding Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/meyerlemonpuddingcake22140.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/meyer-lemon-pudding-cake/",
+        "cooking_time": 45,
+        "ingredients": "4 tbsps unsalted butter at room temperature, 1 cup granulated sugar, 1 tbsp lemon zest, 3  large eggs at room temperature separated, 0.33 cup meyer lemon juice, 0.33 cup all-purpose flour, 1 cup sour cream, 0.25 tsp salt, None  Powdered sugar for dusting",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "unsalted butter at room temperature, granulated sugar, lemon zest, large eggs at room temperature separated, meyer lemon juice, all-purpose flour, sour cream, salt, None  Powdered sugar for dusting"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd092",
+        "title": "Middle Eastern chicken & apricot stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/260611_MEDIUM5174.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/260611/middle-eastern-chicken-and-apricot-stew",
+        "cooking_time": 60,
+        "ingredients": "None  Olive oil, 1  large onion chopped, 1 tbsp root ginger grated, 2  garlic cloves chopped, 4  skinless chicken breasts cut into chunks, 2 tsps baharat or ras-el-hanout spice blend, 100 g red lentils, 10  ready-to-eat apricots finely chopped, 1  lemon juiced, 750 ml chicken stock, None  A handful of mint or coriander chopped, None  A handful of pomegranate seeds",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "None  Olive oil, large onion chopped, root ginger grated, garlic cloves chopped, skinless chicken breasts cut into chunks, baharat or ras-el-hanout spice blend, red lentils, ready-to-eat apricots finely chopped, lemon juiced, ml chicken stock, None  A handful of mint or coriander chopped, None  A handful of pomegranate seeds"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0f9",
+        "title": "Mini Baked Donuts",
+        "image_url": "http://forkify-api.herokuapp.com/images/MiniDonutsRedonef1af.jpg",
+        "publisher": "My Baking Addiction",
+        "source_url": "http://www.mybakingaddiction.com/mini-baked-donuts/",
+        "cooking_time": 45,
+        "ingredients": "1 cup granulated sugar, None  Zest of 1 lemon, 1 cup cake flour sifted, 1  tsp. baking powder, None  Tsp. salt, 1 cup buttermilk, 1  egg lightly beaten, 1  tbsp. butter melted",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "granulated sugar, None  Zest of emon, cake flour sifted, tsp. baking powder, None  Tsp. salt, buttermilk, egg lightly beaten, tbsp. butter melted"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce28",
+        "title": "Mini Chocolate Chip Maple Pancake Cupcakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/kevinandamandaMiniMapleChocolateChipPancakeCupcakes01d93e.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/mini-chocolate-chip-maple-pancake-cupcakes/",
+        "cooking_time": 105,
+        "ingredients": "0.5 cup butter softened, 0.5 cup sugar, 1.5 cups cake flour, 1 tsp baking powder, 0.25 tsp salt, 0.5 cup pure maple syrup, 0.5 tsp vanilla extract, 0.33 cup milk, 2  large eggs, 0.5 cup mini chocolate chips, None  Maple buttercream frosting, 0.5 cup butter softened, 3 cups powdered sugar, 0.25 cup pure maple syrup, 1 tbsp milk, 2 tsps tahitian vanilla extract",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "butter softened, sugar, cake flour, baking powder, salt, pure maple syrup, vanilla extract, milk, large eggs, mini chocolate chips, None  Maple buttercream frosting, butter softened, powdered sugar, pure maple syrup, milk, tahitian vanilla extract"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce0d",
+        "title": "Mini Fruit Pizzas",
+        "image_url": "http://forkify-api.herokuapp.com/images/minifruitpizzas52c00.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/mini-fruit-pizzas/",
+        "cooking_time": 120,
+        "ingredients": "0.5 cup unsalted butter room temperature, 0.67 cup granulated sugar, 1  large egg, 1 tsp lemon zest, 1 tsp vanilla extract, 1.25 cups all-purpose flour, 0.5 tsp baking soda, 0.5 tsp cream of tartar, 0.25 tsp salt, None  For the cream cheese frosting:, 1  package of cream cheese, 2 tbsps granulated sugar, 0.5 cup powdered sugar, 1 tbsp fresh lemon juice, 1 tsp lemon zest, 0.5 tsp vanilla extract, None  Fruit for decorating:, None  Strawberries sliced, None  Blueberries, None  Blackberries",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "unsalted butter room temperature, granulated sugar, large egg, lemon zest, vanilla extract, all-purpose flour, baking soda, cream of tartar, salt, None  For the cream cheese frosting:, package of cream cheese, granulated sugar, powdered sugar, fresh lemon juice, lemon zest, vanilla extract, None  Fruit for decorating:, None  Strawberries sliced, None  Blueberries, None  Blackberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bced4",
+        "title": "Mini Kale and Goat Cheese Risotto Cakes Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30557_RecipeImage_620x413_mini_kale_goat_cheese_cakes1622.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30557-mini-kale-and-goat-cheese-risotto-cakes",
+        "cooking_time": 120,
+        "ingredients": "3 tbsps olive oil, 4 oz flat-leaf kale stems trimmed and leaves torn into bite-size pieces, 1 tbsp water, 1  medium yellow onion finely chopped, 1 cup carnaroli or arborio rice, 1.75 tsps kosher salt plus more as needed, 0.25 tsp freshly ground black pepper plus more as needed, 0.5 cup dry white wine, 2.5 cups low-sodium vegetable or chicken broth, 2.5 oz chvre at room temperature, 1  jar roasted red peppers drained, 1 tbsp panko, 2 tsps olive oil, 1  medium garlic clove smashed, None  Kosher salt, None  Freshly ground black pepper, 2  large eggs, None  Kosher salt, 1.25 cups panko, 1 cup vegetable oil",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "olive oil, flat-leaf kale stems trimmed and leaves torn into bite-size pieces, water, medium yellow onion finely chopped, carnaroli or arborio rice, kosher salt plus more as needed, freshly ground black pepper plus more as needed, dry white wine, low-sodium vegetable or chicken broth, chvre at room temperature, jar roasted red peppers drained, panko, olive oil, medium garlic clove smashed, None  Kosher salt, None  Freshly ground black pepper, large eggs, None  Kosher salt, panko, vegetable oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc73",
+        "title": "Mint caipirinha fruit salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/665_1_1350901582_lrg1c4c.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/fruit-recipes/mint-caipirinha-fruit-salad",
+        "cooking_time": 45,
+        "ingredients": "1  bunch fresh mint leaves picked, None  Finely grated zest and juice of 3 limes, 4 tbsps caster sugar plus extra to taste, None  Cachaa, 1  ripe melon deseeded and flesh scooped out with a spoon, 1  ripe papaya deseeded and flesh scooped out with a spoon, 1  large handful fresh strawberries hulled and halved lengthways, 1  ripe mango stoned and flesh scooped out with a spoon, 1  pineapple peeled cored and cut into chunks",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "bunch fresh mint leaves picked, None  Finely grated zest and juice of imes, caster sugar plus extra to taste, None  Cachaa, ripe melon deseeded and flesh scooped out with a spoon, ripe papaya deseeded and flesh scooped out with a spoon, large handful fresh strawberries hulled and halved lengthways, ripe mango stoned and flesh scooped out with a spoon, pineapple peeled cored and cut into chunks"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdd5",
+        "title": "Minted Lamb Burgers with Feta and Hummus",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_minted_lamb_burgers_with_feta_and_hummus_vd3a4.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2006/02/minted_lamb_burgers_with_feta_and_hummus",
+        "cooking_time": 90,
+        "ingredients": "1.5 pounds ground lamb, 0.5 cup minced fresh mint, 2  garlic cloves pressed, 1 tbsp paprika, 1 tsp salt, 0.5 tsp cayenne pepper, 0.25 tsp cinnamon, 1 tbsp olive oil, 1  7- to 8-oz block feta cheese sliced, 4  kaiser rolls split lightly toasted, 8  onion slices, 4  romaine lettuce leaves, None  Purchased hummus",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "ground lamb, minced fresh mint, garlic cloves pressed, paprika, salt, cayenne pepper, cinnamon, olive oil, 7- to 8-oz block feta cheese sliced, kaiser rolls split lightly toasted, onion slices, romaine lettuce leaves, None  Purchased hummus"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccc8",
+        "title": "Moist Pumpkin Spice Muffins (With Cream Cheese Frosting)",
+        "image_url": "http://forkify-api.herokuapp.com/images/3981628811_088e669ab63cd3.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2009/10/moist-pumpkin-spice-muffins-with-cream-cheese-frosting/",
+        "cooking_time": 120,
+        "ingredients": "None  Muffin ingredients:, 1 cup all-purpose flour, 0.5 cup sugar, 2 tsps baking powder, 1.5 tsps cinnamon, 0.25 tsp ground ginger, 0.5 tsp nutmeg, 0.5 tsp salt, 4 tbsps butter cut into pieces, 1 cup pumpkin puree, 0.5 cup evaporated milk, 1  whole egg, 1.5 tsps vanilla, 0.5 cup golden raisins, None  Topping, 2 tbsps sugar, 1 tsp cinnamon, 0.25 tsp nutmeg, None  For frosting:, 0.25 cup softened butter, 4 oz weight cream cheese, 0.5 pound powdered sugar, 0.5 tsp vanilla",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "None  Muffin ingredients:, all-purpose flour, sugar, baking powder, cinnamon, ground ginger, nutmeg, salt, butter cut into pieces, pumpkin puree, evaporated milk, whole egg, vanilla, golden raisins, None  Topping, sugar, cinnamon, nutmeg, None  For frosting:, softened butter, weight cream cheese, pound powdered sugar, vanilla"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcabe",
+        "title": "Mojito Grilled Fish Tacos with Strawberry Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/Mojito2BFish2BTacos2Bwith2BStrawberry2BSalsa2B5002B732239886992.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/06/mojito-grilled-fish-tacos-with.html",
+        "cooking_time": 90,
+        "ingredients": "1 pound white fish such as tilapia cod etc., 1 tbsp oil, 1  lime juice and zest, 2 tbsps rum, 1  jalapeno finely diced, 1  clove garlic chopped, 1  green onion finely sliced, 1  handful mint chopped, 1  handful cilantro chopped, 0.5 tsp cumin toasted and ground, None  Salt and pepper to taste, 8  tortillas, 2 cups strawberry and avocado salsa, 0.5 cup queso fresco or feta crumbled, 1  handful cilantro",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "pound white fish such as tilapia cod etc., oil, lime juice and zest, rum, jalapeno finely diced, clove garlic chopped, green onion finely sliced, handful mint chopped, handful cilantro chopped, cumin toasted and ground, None  Salt and pepper to taste, tortillas, strawberry and avocado salsa, queso fresco or feta crumbled, handful cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd6e",
+        "title": "Molten Dulce de Leche Cakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/moltendulcedelechecakes646637a.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/08/molten-dulce-de-leche-cakes",
+        "cooking_time": 30,
+        "ingredients": "None  Unsalted butter, 2.5 tbsps all-purpose flour plus more for ramekins, 2  large egg yolks, 1  large egg, 1.67 cups canned or jarred dulce de leche, None  Vanilla or banana ice cream",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "None  Unsalted butter, all-purpose flour plus more for ramekins, large egg yolks, large egg, canned or jarred dulce de leche, None  Vanilla or banana ice cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb44",
+        "title": "Mom&#8217;s Roast Turkey",
+        "image_url": "http://forkify-api.herokuapp.com/images/momsroastturkey520a300x189c6d75af3.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/moms_roast_turkey/",
+        "cooking_time": 60,
+        "ingredients": "1  turkey approx. 15 lbs.*, None  Juice of a lemon, None  Salt and pepper, None  Olive oil or melted butter, 1  yellow onion peeled and quartered, None  Tops and bottoms of a bunch of celery, 2  carrots, None  Parsley, None  Sprigs of fresh rosemary thyme",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "turkey approx. s.*, None  Juice of a lemon, None  Salt and pepper, None  Olive oil or melted butter, yellow onion peeled and quartered, None  Tops and bottoms of a bunch of celery, carrots, None  Parsley, None  Sprigs of fresh rosemary thyme"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb45",
+        "title": "Mom&#8217;s Turkey Stuffing",
+        "image_url": "http://forkify-api.herokuapp.com/images/turkeystuffing300x20035b66c5f.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/moms_turkey_stuffing/",
+        "cooking_time": 75,
+        "ingredients": "1  loaf of day old french bread cut into 3/4-inch cubes, 1 cup walnuts, 2 cups each chopped onion and celery, 6 tbsps butter, 1  green apple peeled cored chopped, 0.75 cup of currants or raisins, None  Several chopped green olives, None  Stock from the turkey giblets, 0.25 cup chopped fresh parsley, 1 tsp poultry seasoning or ground sage, None  Salt and freshly ground pepper",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "loaf of day old french bread cut into 3/4-inch cubes, walnuts, each chopped onion and celery, butter, green apple peeled cored chopped, of currants or raisins, None  Several chopped green olives, None  Stock from the turkey giblets, chopped fresh parsley, poultry seasoning or ground sage, None  Salt and freshly ground pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc98d",
+        "title": "Mom's Sushi Rice",
+        "image_url": "http://forkify-api.herokuapp.com/images/2612293997.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Moms-Sushi-Rice/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "2.25 cups japanese sushi-style rice, 1  piece konbu dried kelp, 3 cups water, 0.25 cup rice vinegar, 0.25 cup white sugar, 1.25 tsps salt",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "japanese sushi-style rice, piece konbu dried kelp, water, rice vinegar, white sugar, salt"
+    },
+ {
+        "recipe_id": "5ed6604591c37cdc054bcf37",
+        "title": "Spiced mackerel on toast with beetroot salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/5873_MEDIUM1350.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/5873/spiced-mackerel-on-toast-with-beetroot-salsa",
+        "cooking_time": 60,
+        "ingredients": "250 g pack beetroot diced, 1  eating apple cut into wedges then thinly sliced, 1  small red onion finely sliced, None  Juice lemon, 1 tbsp olive oil plus extra for drizzling, 1 tsp cumin seeds, None  Small bunch coriander leaves roughly chopped, 4  mackerel fillets halved widthways, 1 tsp curry powder, 4  slices sourdough bread or ciabatta",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "pack beetroot diced, eating apple cut into wedges then thinly sliced, small red onion finely sliced, None  Juice lemon, olive oil plus extra for drizzling, cumin seeds, None  Small bunch coriander leaves roughly chopped, mackerel fillets halved widthways, curry powder, slices sourdough bread or ciabatta"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbb3",
+        "title": "Spicy Asian Chicken With Brussels Sprouts",
+        "image_url": "http://forkify-api.herokuapp.com/images/chickenricebowl_300cd18af72.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/spicy-asian-chicken-with-brussels-sprouts-00000000049534/index.html",
+        "cooking_time": 90,
+        "ingredients": "1 cup long-grain white rice, 1  large egg, 0.5 cup cornstarch, 1 pound boneless skinless chicken breasts thinly sliced, 3  tablespooons canola oil plus more if necessary, 0.5 pound brussels sprouts thinly sliced, 1  1-inch piece fresh ginger peeled and cut into matchsticks, 2  garlic cloves thinly sliced, 3 tbsps low-sodium soy sauce, 3 tbsps rice vinegar, 2 tbsps packed light brown sugar, 1  red chili pepper thinly sliced, 1 tsp toasted sesame oil, 2  scallions thinly sliced, 2 tbsps chopped roasted peanuts",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "long-grain white rice, large egg, cornstarch, pound boneless skinless chicken breasts thinly sliced, tablespooons canola oil plus more if necessary, pound brussels sprouts thinly sliced, 1-inch piece fresh ginger peeled and cut into matchsticks, garlic cloves thinly sliced, low-sodium soy sauce, rice vinegar, packed light brown sugar, red chili pepper thinly sliced, toasted sesame oil, scallions thinly sliced, chopped roasted peanuts"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc7b",
+        "title": "Spicy Beans",
+        "image_url": "http://forkify-api.herokuapp.com/images/6005198000_e154cac62e_oc725.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/08/spicy-beans/",
+        "cooking_time": 60,
+        "ingredients": "4 cups dry pinto beans, 1  whole ham hock, 1  whole onion diced, 2  whole red bell peppers diced, 4  cloves garlic minced, 2  whole jalapenos sliced, 2 tsps salt more to taste, 2 tsps chili powder, 2 tsps black pepper more to taste",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "dry pinto beans, whole ham hock, whole onion diced, whole red bell peppers diced, cloves garlic minced, whole jalapenos sliced, salt more to taste, chili powder, black pepper more to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc920",
+        "title": "Spicy Cajun chicken quinoa",
+        "image_url": "http://forkify-api.herokuapp.com/images/1162644_MEDIUM51a2.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1162644/spicy-cajun-chicken-quinoa",
+        "cooking_time": 60,
+        "ingredients": "4  skinless chicken breasts cut into bite-sized pieces, 1 tbsp cajun seasoning, 100 g quinoa, 600 ml hot chicken stock, 100 g dried apricots sliced, None  X 250g pouch ready-to-use puy lentils, 1 tbsp olive oil, 2  red onions cut into thin wedges, 1  bunch spring onions chopped, None  Small bunch coriander chopped",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "skinless chicken breasts cut into bite-sized pieces, cajun seasoning, quinoa, ml hot chicken stock, dried apricots sliced, None  X 250g pouch ready-to-use puy lentils, olive oil, red onions cut into thin wedges, bunch spring onions chopped, None  Small bunch coriander chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd83",
+        "title": "Spicy Chicken Thighs with Rhubarb-Cucumber Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/spicychickenthighswithruhbardcucumbersalsa6463a62.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2012/04/spicy-chicken-thighs-with-rhubarb-cucumber-salsa",
+        "cooking_time": 75,
+        "ingredients": "1  habanero scotch bonnet or thai chile with seeds stemmed, 2  garlic cloves, 2  scallions thinly sliced white and green parts divided, 1 tbsp soy sauce, 0.25 cup olive oil, 6  large skin-on bone-in chicken thighs, None  Kosher salt, 1.5 cups 1/4-inch cubes rhubarb, 1 cup 1/4-inch cubes unpeeled seeded english hothouse cucumber, 0.5 cup coarsely chopped fresh cilantro, 1 tbsp honey, 1 tbsp vegetable oil, 1 tsp fresh lime juice, None  Freshly ground black pepper",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "habanero scotch bonnet or thai chile with seeds stemmed, garlic cloves, scallions thinly sliced white and green parts divided, soy sauce, olive oil, large skin-on bone-in chicken thighs, None  Kosher salt, 1/4-inch cubes rhubarb, 1/4-inch cubes unpeeled seeded english hothouse cucumber, coarsely chopped fresh cilantro, honey, vegetable oil, fresh lime juice, None  Freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc886",
+        "title": "Spicy Chicken and Pepper Jack Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/FlatBread21of1a180.jpg",
+        "publisher": "My Baking Addiction",
+        "source_url": "http://www.mybakingaddiction.com/spicy-chicken-and-pepper-jack-pizza-recipe/",
+        "cooking_time": 45,
+        "ingredients": "1  tbsp. canola or olive oil, 0.5 cup chopped sweet onion, 3 cups diced fresh red yellow and green bell peppers, 1  tube refrigerated pizza dough, 0.5 cup salsa, 2 cups sargento chefstyle shredded pepper jack cheese, None  Chopped cilantro or dried oregano",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "tbsp. canola or olive oil, chopped sweet onion, diced fresh red yellow and green bell peppers, tube refrigerated pizza dough, salsa, sargento chefstyle shredded pepper jack cheese, None  Chopped cilantro or dried oregano"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca16",
+        "title": "Spicy Chipotle Turkey Burgers",
+        "image_url": "http://forkify-api.herokuapp.com/images/6770736050.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Spicy-Chipotle-Turkey-Burgers/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1 pound ground turkey, 0.5 cup finely chopped onion, 2 tbsps chopped fresh cilantro, 1  chipotle chile in adobo sauce finely chopped, 1 tsp garlic powder, 1 tsp onion powder, 1 tsp seasoned salt, 0.25 tsp black pepper, 4  slices mozzarella cheese, 4  hamburger buns split and toasted",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "pound ground turkey, finely chopped onion, chopped fresh cilantro, chipotle chile in adobo sauce finely chopped, garlic powder, onion powder, seasoned salt, black pepper, slices mozzarella cheese, hamburger buns split and toasted"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc89e",
+        "title": "Spicy Cinnamon-Sugar Popcorn Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/10864_RecipeImage_620x413_spicy_cinnamon_suger_popcorn4c22.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/10864-spicy-cinnamon-sugar-popcorn",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp plus 1 tsp granulated sugar, 0.25 tsp fine salt, 0.13 tsp ground cinnamon, 0.5 cup popcorn kernels, 3 tbsps unsalted butter melted, 1 tbsp hot chile oil such as la-yu",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "plus granulated sugar, fine salt, ground cinnamon, popcorn kernels, unsalted butter melted, hot chile oil such as la-yu"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd25",
+        "title": "Spicy Lemon Coconut Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/spicy_lemon_coconut_sauce7656.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/spicy-lemon-coconut-sauce-recipe.html",
+        "cooking_time": 60,
+        "ingredients": "1  clove garlic peeled, 1  medium jalapeno chile deseeded and chopped, 0.5 tsp fine grain sea salt plus more to taste, 1 tbsp sunflower oil, 1  small bunch of scallions thinly sliced, 0.5 cup finely chopped cilantro, 1  14-oz can of coconut milk, 3 tbsps freshly squeezed lemon juice plus more to taste",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "clove garlic peeled, medium jalapeno chile deseeded and chopped, fine grain sea salt plus more to taste, sunflower oil, small bunch of scallions thinly sliced, finely chopped cilantro, 14-oz can of coconut milk, freshly squeezed lemon juice plus more to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc86",
+        "title": "Spicy Pasta Salad with Smoked Gouda, Tomatoes, and Basil",
+        "image_url": "http://forkify-api.herokuapp.com/images/5842229930_73a968f08e_zab23.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/06/spicy-pasta-salad-with-smoked-gouda-tomatoes-and-basil/",
+        "cooking_time": 60,
+        "ingredients": "12 oz weight mostaccioli, 0.5 cup mayonnaise, 0.25 cup whole milk, 4 tbsps white vinegar, 1.5 tsps adobo sauce from chipotle peppers, 0.5 tsp salt, None  Ground black pepper to taste, 10 oz weight grape tomatoes halved lengthwise, 0.5 pound smoked gouda cheese cut into small cubes, 24  whole basil leaves",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "weight mostaccioli, mayonnaise, whole milk, white vinegar, adobo sauce from chipotle peppers, salt, None  Ground black pepper to taste, weight grape tomatoes halved lengthwise, pound smoked gouda cheese cut into small cubes, whole basil leaves"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca17",
+        "title": "Spicy Quince and Cranberry Chutney",
+        "image_url": "http://forkify-api.herokuapp.com/images/926444f5dc.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Spicy-Quince-And-Cranberry-Chutney/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "2 cups white sugar, 0.5 tsp ground cloves, 0.5 tsp ground allspice, 1 tsp ground cinnamon, 0.5 tsp salt, 2 cups water, 1 pound quinces - peeled cored and diced, 1  orange zested, 0.5 cup orange juice, 2 tbsps white wine vinegar, 3 cups fresh or frozen cranberries",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "white sugar, ground cloves, ground allspice, ground cinnamon, salt, water, pound quinces - peeled cored and diced, orange zested, orange juice, white wine vinegar, fresh or frozen cranberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc5a",
+        "title": "Spicy Spinach-Stuffed Mushrooms",
+        "image_url": "http://forkify-api.herokuapp.com/images/shrooms66ca.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/02/spicy-spinach-stuffed-mushrooms/",
+        "cooking_time": 60,
+        "ingredients": "24 oz weight white mushrooms, 1 tbsp olive oil, 1 tbsp butter, 1  whole medium onion diced, 0.5 cup panko breadcrumbs, None  Salt and black pepper to taste, 8 oz weight cream cheese softened, 0.33 cup sour cream, 0.5 cup grated sharp cheddar cheese, 0.5 cup grated monterey jack or farmer's cheese, 1  package chopped spinach thawed, 8  dashes hot sauce",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "weight white mushrooms, olive oil, butter, whole medium onion diced, panko breadcrumbs, None  Salt and black pepper to taste, weight cream cheese softened, sour cream, grated sharp cheddar cheese, grated monterey jack or farmer's cheese, package chopped spinach thawed, dashes hot sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc861",
+        "title": "Spicy Thai Coconut Quinoa Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30507_RecipeImage_620x413_spicy_thai_coconut_quinoaa3db.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30507-spicy-thai-coconut-quinoa",
+        "cooking_time": 120,
+        "ingredients": "1.67 cups fresh cilantro long thick stems removed, 0.75 cup roasted unsalted peanuts, 0.33 cup sriracha hot sauce, 2 tbsps finely grated lime zest, 0.25 cup freshly squeezed lime juice, 0.25 cup toasted sesame oil, 1 tbsp packed dark brown sugar, 2  medium garlic cloves, 1.5 tsps kosher salt, 2 cups quinoa any color or variety, 1  can unsweetened coconut milk, 1.33 cups vegetable stock or low-sodium vegetable broth, 1 tsp kosher salt plus more as needed, 1  package firm tofu, 2  medium carrots, 1  medium broccoli head, 4  medium scallions, 2 tbsps vegetable oil, None  Coarsely chopped fresh cilantro, None  Coarsely chopped roasted unsalted peanuts, None  Thinly sliced scallions",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "fresh cilantro long thick stems removed, roasted unsalted peanuts, sriracha hot sauce, finely grated lime zest, freshly squeezed lime juice, toasted sesame oil, packed dark brown sugar, medium garlic cloves, kosher salt, quinoa any color or variety, can unsweetened coconut milk, vegetable stock or low-sodium vegetable broth, kosher salt plus more as needed, package firm tofu, medium carrots, medium broccoli head, medium scallions, vegetable oil, None  Coarsely chopped fresh cilantro, None  Coarsely chopped roasted unsalted peanuts, None  Thinly sliced scallions"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca18",
+        "title": "Spicy Tuna Sushi Roll",
+        "image_url": "http://forkify-api.herokuapp.com/images/8781327d89.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Spicy-Tuna-Sushi-Roll/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "2 cups uncooked glutinous white rice, 2.5 cups water, 1 tbsp rice vinegar, 1  can solid white tuna in water drained, 1 tbsp mayonnaise, 1 tsp chili powder, 1 tsp wasabi paste, 4  sheets nori, 1  cucumber finely diced, 1  carrot finely diced, 1  avocado - peeled pitted and diced",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "uncooked glutinous white rice, water, rice vinegar, can solid white tuna in water drained, mayonnaise, chili powder, wasabi paste, sheets nori, cucumber finely diced, carrot finely diced, avocado - peeled pitted and diced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcddf",
+        "title": "Spicy Turkey Paella",
+        "image_url": "http://forkify-api.herokuapp.com/images/ttss_spicy_turkey_paella_v57ce.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2003/11/spicy_turkey_paella",
+        "cooking_time": 90,
+        "ingredients": "12 oz spicy smoked sausage cut into 1/2-inch slices, 0.25 cup garlic-flavored olive oil, 2  large yellow onions chopped, 1  large red bell pepper chopped, 2 cups long-grain white rice, 0.25 tsp saffron, 4 cups low-salt chicken broth, 4  large plum tomatoes quartered, 1 tsp salt, 1 tsp dried oregano, 0.5 tsp cayenne pepper, 4.5 cups cooked leftover turkey cut into 1/2-inch cubes, 1 cup frozen peas",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "spicy smoked sausage cut into 1/2-inch slices, garlic-flavored olive oil, large yellow onions chopped, large red bell pepper chopped, long-grain white rice, saffron, low-salt chicken broth, large plum tomatoes quartered, salt, dried oregano, cayenne pepper, cooked leftover turkey cut into 1/2-inch cubes, frozen peas"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca19",
+        "title": "Spicy Vegan Potato Curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/2854341229.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Spicy-Vegan-Potato-Curry/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "4  potatoes peeled and cubed, 2 tbsps vegetable oil, 1  yellow onion diced, 3  cloves garlic minced, 2 tsps ground cumin, 1.5 tsps cayenne pepper, 4 tsps curry powder, 4 tsps garam masala, 1  piece fresh ginger root peeled and minced, 2 tsps salt, 1  can diced tomatoes, 1  can garbanzo beans rinsed and drained, 1  can peas drained, 1  can coconut milk",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "potatoes peeled and cubed, vegetable oil, yellow onion diced, cloves garlic minced, ground cumin, cayenne pepper, curry powder, garam masala, piece fresh ginger root peeled and minced, salt, can diced tomatoes, can garbanzo beans rinsed and drained, can peas drained, can coconut milk"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc5f",
+        "title": "Spicy Whiskey BBQ Sliders",
+        "image_url": "http://forkify-api.herokuapp.com/images/sliders089d.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/12/spicy-whiskey-bbq-sliders/",
+        "cooking_time": 45,
+        "ingredients": "2 pounds ground meat, None  Salt and pepper, 4 tbsps butter, 1  whole large onion diced, 0.5 cup whiskey, 1 cup barbecue sauce, 0.25 cup jarred jalapeno slices, 12  whole slider buns or dinner rolls split",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "ground meat, None  Salt and pepper, butter, whole large onion diced, whiskey, barbecue sauce, jarred jalapeno slices, whole slider buns or dinner rolls split"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc9fb",
+        "title": "Spicy chicken kebabs",
+        "image_url": "http://forkify-api.herokuapp.com/images/1733_MEDIUM2ee0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1733/spicy-chicken-kebabs",
+        "cooking_time": 60,
+        "ingredients": "3  garlic cloves roughly chopped, None  Knob of fresh ginger roughly chopped plus extra to serve, 1  orange grated zest and juice, 3  spring onions roughly chopped, 2 tbsps clear honey, 1 tbsp light soy sauce, 2 tbsps vegetable oil, 4  small skinless boneless chicken breast fillets cut into cubes, 20  button mushrooms, 20  cherry tomatoes, 2  large red peppers seeded and each cut into 10",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "garlic cloves roughly chopped, None  Knob of fresh ginger roughly chopped plus extra to serve, orange grated zest and juice, spring onions roughly chopped, clear honey, light soy sauce, vegetable oil, small skinless boneless chicken breast fillets cut into cubes, button mushrooms, cherry tomatoes, large red peppers seeded and each cut into 10"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0a0",
+        "title": "Spicy pepper & tomato soup with cucumber yogurt",
+        "image_url": "http://forkify-api.herokuapp.com/images/2320644_MEDIUM08f0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2320644/spicy-pepper-and-tomato-soup-with-cucumber-yogurt",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps olive oil plus extra to serve, 2  onions finely sliced, 1  carrot finely chopped, 3  red peppers roughly chopped, 3  garlic cloves sliced, 1  red chilli sliced, 400 g can chopped tomatoes, 850 ml litre/1-1pts vegetable stock or bouillon, 4 tbsps greek-style yogurt, None  Cucumber halved deseeded coarsely grated and squeezed of excess water, None  A few mint leaves chopped",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "olive oil plus extra to serve, onions finely sliced, carrot finely chopped, red peppers roughly chopped, garlic cloves sliced, red chilli sliced, can chopped tomatoes, ml litre/1-1pts vegetable stock or bouillon, greek-style yogurt, None  Cucumber halved deseeded coarsely grated and squeezed of excess water, None  A few mint leaves chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc02",
+        "title": "Spicy root & lentil casserole",
+        "image_url": "http://forkify-api.herokuapp.com/images/1364_MEDIUM09a4.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1364/spicy-root-and-lentil-casserole",
+        "cooking_time": 75,
+        "ingredients": "2 tbsps sunflower or vegetable oil, 1  onion chopped, 2  garlic cloves crushed, 700 g potatoes peeled and cut into chunks, 4  carrots thickly sliced, 2  parsnips thickly sliced, 2 tbsps curry paste or powder, 1  litre/1 pints vegetable stock, 100 g red lentils, None  A small bunch of fresh coriander roughly chopped, None  Low-fat yogurt and naan bread to serve",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "sunflower or vegetable oil, onion chopped, garlic cloves crushed, potatoes peeled and cut into chunks, carrots thickly sliced, parsnips thickly sliced, curry paste or powder, litre/s vegetable stock, red lentils, None  A small bunch of fresh coriander roughly chopped, None  Low-fat yogurt and naan bread to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfbf",
+        "title": "Spinach & sweet potato curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/3715_MEDIUM7aa0.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3715/spinach-and-sweet-potato-curry",
+        "cooking_time": 45,
+        "ingredients": "2  orange-fleshed sweet potatoes cut into chunks, 200 g spinach washed &amp; roughly chopped, 4  naan bread warmed through, 400 g tin coconut milk, 1  onion finely sliced, 2  madras curry paste depending on how hot you like your curry",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "orange-fleshed sweet potatoes cut into chunks, spinach washed &amp; roughly chopped, naan bread warmed through, tin coconut milk, onion finely sliced, madras curry paste depending on how hot you like your curry"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc0d",
+        "title": "Spinach Artichoke Lasagna Roll Ups",
+        "image_url": "http://forkify-api.herokuapp.com/images/SpinachArtichokeLasagnaRollUps10e10a.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/spinach-artichoke-lasagna-roll-ups/",
+        "cooking_time": 75,
+        "ingredients": "12  lasagna noodles, 1 tsp salt, 2 cups ricotta cheese, 1  large egg, 2  cloves garlic minced, 10 oz frozen spinach thawed drained and squeeze to remove water, 1 cup chopped canned or jarred artichoke hearts, 0.25 cup parmesan cheese, 0.25 tsp dried basil, 0.13 tsp crushed red pepper flakes, None  Pinch of nutmeg, None  Salt and freshly ground black pepper to taste, 2 cups shredded mozzarella cheese, None  Easy marinara sauce, None  Or your favorite sauce",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "lasagna noodles, salt, ricotta cheese, large egg, cloves garlic minced, frozen spinach thawed drained and squeeze to remove water, chopped canned or jarred artichoke hearts, parmesan cheese, dried basil, crushed red pepper flakes, None  Pinch of nutmeg, None  Salt and freshly ground black pepper to taste, shredded mozzarella cheese, None  Easy marinara sauce, None  Or your favorite sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc3f",
+        "title": "Spinach Artichoke Pasta",
+        "image_url": "http://forkify-api.herokuapp.com/images/artichoke821e.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/10/spinach-artichoke-pasta/",
+        "cooking_time": 75,
+        "ingredients": "6 tbsps butter, 4  cloves garlic finely minced, 2  bags baby spinach, 2  cans artichoke hearts drained and halved, 3 tbsps flour, 3 cups whole milk, 0.25 tsp cayenne pepper, None  Salt and pepper to taste, 0.5 cup grated parmesan cheese, 1.5 cups mozzarella or monterey jack cheese grated, 0.5 cup low sodium chicken broth, 12 oz weight penne cooked until al dente, 0.5 cup seasoned panko breadcrumbs, None  Crushed red pepper to taste",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "butter, cloves garlic finely minced, bags baby spinach, cans artichoke hearts drained and halved, flour, whole milk, cayenne pepper, None  Salt and pepper to taste, grated parmesan cheese, mozzarella or monterey jack cheese grated, low sodium chicken broth, weight penne cooked until al dente, seasoned panko breadcrumbs, None  Crushed red pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb80",
+        "title": "Steak Fajitas",
+        "image_url": "http://forkify-api.herokuapp.com/images/dish11_300d9f7c141.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/steak-fajitas-10000001736759/index.html",
+        "cooking_time": 45,
+        "ingredients": "1 pound flank steak thinly sliced against the grain, 1  onion thinly sliced, 2  red bell peppers seeded and thinly sliced, 1  jalapeno seeded and thinly sliced, 1 tsp chili powder, 1 tsp hot sauce, 4  kosher salt, 4 tsps 1-quart resealable plastic freezer bags, 8  olive oil",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "pound flank steak thinly sliced against the grain, onion thinly sliced, red bell peppers seeded and thinly sliced, jalapeno seeded and thinly sliced, chili powder, hot sauce, kosher salt, 1-quart resealable plastic freezer bags, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce3b",
+        "title": "Spinach Mushroom Cannelloni",
+        "image_url": "http://forkify-api.herokuapp.com/images/spinachcannellonif04b.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/spinach-mushroom-cannelloni/",
+        "cooking_time": 165,
+        "ingredients": "None  Filling:, 2 tbsps olive oil, 1  small onion chopped, 1  garlic clove minced, 3 cups fresh spinach, 2 cups sliced mushrooms, 1.5 cups ricotta cheese, 0.5 cup shredded mozzarella cheese, 0.25 cup shredded parmesan cheese, 1  large egg beaten, 1 tsp dried basil, 0.5 tsp dried oregano, 0.25 tsp black pepper, 0.5 tsp salt, None  Marinara sauce:, 1 tbsp olive oil, 1  small onion chopped, 2  garlic cloves minced, None  Dash crushed red pepper, 1 tsp fennel seeds, 3  cans diced tomatoes, 1 tbsp tomato paste, 3 tbsps chopped fresh basil, None  Salt and pepper to taste, None  Pasta:, 1  box no-boil lasagna noodles, None  Cheese topping:, 1.5 cups shredded mozzarella cheese",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "None  Filling:, olive oil, small onion chopped, garlic clove minced, fresh spinach, sliced mushrooms, ricotta cheese, shredded mozzarella cheese, shredded parmesan cheese, large egg beaten, dried basil, dried oregano, black pepper, salt, None  Marinara sauce:, olive oil, small onion chopped, garlic cloves minced, None  Dash crushed red pepper, fennel seeds, cans diced tomatoes, tomato paste, chopped fresh basil, None  Salt and pepper to taste, None  Pasta:, box no-boil lasagna noodles, None  Cheese topping:, shredded mozzarella cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce19",
+        "title": "Spinach Quinoa Salad with Roasted Grapes, Pears, & Almonds",
+        "image_url": "http://forkify-api.herokuapp.com/images/spinachquinoasaladwithroastedgrapespearsandalmonds232a.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/spinach-quinoa-salad-with-roasted-grapes-pears-almonds/",
+        "cooking_time": 75,
+        "ingredients": "2 cups red seedless grapes, 2  large bartlett pears chopped, 1 tbsp honey, 2 cups water, None  Pinch of sea salt, 1 cup quinoarinsed and drained, 8 cups fresh spinach, 0.5 cup chopped almonds, None  For the lemon-honey dressing:, 2 tbsps olive oil, 3 tbsps freshly squeezed lemon juice, 1.5 tsps honey, 0.5 tsp kosher salt, 0.25 tsp freshly ground black pepper",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "red seedless grapes, large bartlett pears chopped, honey, water, None  Pinch of sea salt, quinoarinsed and drained, fresh spinach, chopped almonds, None  For the lemon-honey dressing:, olive oil, freshly squeezed lemon juice, honey, kosher salt, freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca1b",
+        "title": "Spinach Salad with Poppy Seed Dressing",
+        "image_url": "http://forkify-api.herokuapp.com/images/407902c5ca.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Spinach-Salad-With-Poppy-Seed-Dressing/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "0.5 cup creamy salad dressing, 0.33 cup white vinegar, 0.33 cup white sugar, 1 tsp poppy seeds, 4 cups baby spinach, 4 cups mixed salad greens, 1  can mandarin oranges drained, 0.33 cup thinly sliced red onion, 0.5 cup slivered almonds",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "creamy salad dressing, white vinegar, white sugar, poppy seeds, baby spinach, mixed salad greens, can mandarin oranges drained, thinly sliced red onion, slivered almonds"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca1c",
+        "title": "Split Pea Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/466333963.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Split-Pea-Soup/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "2.25 cups dried split peas, 2  quarts cold water, 1.5 pounds ham bone, 2  onions thinly sliced, 0.5 tsp salt, 0.25 tsp ground black pepper, 1  pinch dried marjoram, 3  stalks celery chopped, 3  carrots chopped, 1  potato diced",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "dried split peas, quarts cold water, ham bone, onions thinly sliced, salt, ground black pepper, pinch dried marjoram, stalks celery chopped, carrots chopped, potato diced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb6f",
+        "title": "Split Pea Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/splitpeasoupnew300x200c6200b0a.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/split_pea_soup/",
+        "cooking_time": 60,
+        "ingredients": "1  lb green split peas, 1  large onion peeled and chopped, 2  celery stalks chopped, 1  large leek chopped, 1  large carrot chopped, 1  large clove of garlic halved, 1  herb bouquet*, 2  well-rinsed ham hocks, None  Salt and pepper, None  Optional garnish - small toasted croutons ** chopped parsley or chives",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "lb green split peas, large onion peeled and chopped, celery stalks chopped, large leek chopped, large carrot chopped, large clove of garlic halved, herb bouquet*, well-rinsed ham hocks, None  Salt and pepper, None  Optional garnish - small toasted croutons ** chopped parsley or chives"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd45",
+        "title": "Spring Pasta",
+        "image_url": "http://forkify-api.herokuapp.com/images/spring_pasta_recipe8286.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/spring-pasta-recipe.html",
+        "cooking_time": 60,
+        "ingredients": "8 oz / 225 g cooked leftover pasta, 2  eggs, None  Fine grain sea salt, 1 tbsp olive oil, 1 tbsp unsalted butter, 3  big handfuls of sliced asparagus and/or pea shoots or tiny broccoli trees or shredded greens - anything quick cooking and fresh, None  Chopped avocado, None  Chopped herbs",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "/ cooked leftover pasta, eggs, None  Fine grain sea salt, olive oil, unsalted butter, big handfuls of sliced asparagus and/or pea shoots or tiny broccoli trees or shredded greens - anything quick cooking and fresh, None  Chopped avocado, None  Chopped herbs"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd84",
+        "title": "Spring Vegetable and Goat Cheese Dip",
+        "image_url": "http://forkify-api.herokuapp.com/images/springvegetableandgoatcheesedip646b6a1.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/04/spring-vegetable-and-goat-cheese-dip",
+        "cooking_time": 90,
+        "ingredients": "1 cup 3/4-inch pieces asparagus, 2 tbsps unsalted butter, 1 cup chopped leeks, 2 tbsps all-purpose flour, 1.25 cups whole milk, 1 cup grated mild white cheddar, None  Kosher salt and freshly ground black pepper, 1  14-oz can chopped artichoke hearts in water drained, 0.25 cup fresh peas, 2 tbsps chopped fresh chives, 2 tbsps chopped fresh mint, 2 tbsps chopped fresh flat-leaf parsley, 0.5 tsp finely grated lemon zest, 4 oz crumbled fresh goat cheese divided",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "3/4-inch pieces asparagus, unsalted butter, chopped leeks, all-purpose flour, whole milk, grated mild white cheddar, None  Kosher salt and freshly ground black pepper, 14-oz can chopped artichoke hearts in water drained, fresh peas, chopped fresh chives, chopped fresh mint, chopped fresh flat-leaf parsley, finely grated lemon zest, crumbled fresh goat cheese divided"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf7d",
+        "title": "Spring Vegetable and Goat Cheese Dip",
+        "image_url": "http://forkify-api.herokuapp.com/images/395040eb8b.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Spring-Vegetable-and-Goat-Cheese-Dip-395040",
+        "cooking_time": 75,
+        "ingredients": "1 cup 3/4\"-inch pieces asparagus, 2 tbsps unsalted butter, 1 cup chopped leeks, 2 tbsps all-purpose flour, 1.25 cups whole milk, 1 cup grated mild white cheddar, None  Kosher salt and freshly ground black pepper, 1  14-oz can chopped artichoke hearts in water drained, 0.25 cup fresh peas, 2 tbsps chopped fresh chives, 2 tbsps chopped fresh mint, 2 tbsps chopped fresh flat-leaf parsley, 0.5 tsp finely grated lemon zest, 4 oz crumbled fresh goat cheese divided",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "3/4\"-inch pieces asparagus, unsalted butter, chopped leeks, all-purpose flour, whole milk, grated mild white cheddar, None  Kosher salt and freshly ground black pepper, 14-oz can chopped artichoke hearts in water drained, fresh peas, chopped fresh chives, chopped fresh mint, chopped fresh flat-leaf parsley, finely grated lemon zest, crumbled fresh goat cheese divided"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce77",
+        "title": "Spring lamb shepherds pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/533_1_1349858092_lrg2075.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/lamb-recipes/spring-lamb-shepherd-s-pie",
+        "cooking_time": 105,
+        "ingredients": "1 kg quality boneless shoulder of lamb, 2 tbsps flour, None  Sea salt, None  Freshly ground black pepper, 2  lugs olive oil, 1  red onion peeled and roughly chopped, 2  sticks celery trimmed and roughly chopped, 1  carrot peeled and roughly chopped, 50 g higher-welfare pancetta roughly chopped, 2  cloves garlic finely chopped, 1  small bunch fresh rosemary leaves picked, 400 g tinned plum tomatoes chopped, 250 ml organic lamb or vegetable stock, 1 kg desire potatoes, 200 ml milk, 2  knobs butter",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "quality boneless shoulder of lamb, flour, None  Sea salt, None  Freshly ground black pepper, lugs olive oil, red onion peeled and roughly chopped, sticks celery trimmed and roughly chopped, carrot peeled and roughly chopped, higher-welfare pancetta roughly chopped, cloves garlic finely chopped, small bunch fresh rosemary leaves picked, tinned plum tomatoes chopped, ml organic lamb or vegetable stock, desire potatoes, ml milk, knobs butter"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca1e",
+        "title": "Springtime Spinach Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/68686145d.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Springtime-Spinach-Salad/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "2  eggs, 4  slices bacon, 5 cups fresh spinach rinsed and torn into bite-size pieces, 0.5 cup sliced fresh mushrooms, 1 cup sliced fresh strawberries, 0.5 cup thinly sliced onion, 1  kiwi sliced, 1  mandarin orange peeled and segmented, 0.25 cup ketchup, 0.25 cup water, 0.25 cup olive oil, 0.25 cup brown sugar, 2 tbsps cider vinegar, 0.5 tsp spicy brown mustard, 1  dash garlic powder, None  Salt and pepper to taste, 1 cup seasoned croutons",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "eggs, slices bacon, fresh spinach rinsed and torn into bite-size pieces, sliced fresh mushrooms, sliced fresh strawberries, thinly sliced onion, kiwi sliced, mandarin orange peeled and segmented, ketchup, water, olive oil, brown sugar, cider vinegar, spicy brown mustard, dash garlic powder, None  Salt and pepper to taste, seasoned croutons"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfed",
+        "title": "Sprouts with chorizo & almonds",
+        "image_url": "http://forkify-api.herokuapp.com/images/8495_MEDIUM87c4.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/8495/sprouts-with-chorizo-and-almonds",
+        "cooking_time": 45,
+        "ingredients": "750 g brussels sprouts trimmed, 1  garlic clove crushed, 70 g sliced chorizo cut into strips, None  Olive oil, 3 tbsps flaked almonds toasted until golden",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "brussels sprouts trimmed, garlic clove crushed, sliced chorizo cut into strips, None  Olive oil, flaked almonds toasted until golden"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0e7",
+        "title": "Sprouts with walnuts & bacon",
+        "image_url": "http://forkify-api.herokuapp.com/images/4146_MEDIUM6f94.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/4146/sprouts-with-walnuts-and-bacon",
+        "cooking_time": 45,
+        "ingredients": "750 g brussels sprouts trimmed, 70 g bacon lardons or cubetti de pancetta, None  Butter, 25 oz walnut halves roughly chopped",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "brussels sprouts trimmed, bacon lardons or cubetti de pancetta, None  Butter, walnut halves roughly chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd67",
+        "title": "Squash and Broccoli Rabe Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/squashandbroccolirabelasagna646e0f9.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/10/squash-and-broccoli-rabe-lasagna",
+        "cooking_time": 105,
+        "ingredients": "2  2-lb. butternut squash peeled halved seeded cut crosswise into 1/4-inch-thick slices, 3 tbsps olive oil plus more, None  Kosher salt freshly ground pepper, 2 pounds broccoli rabe tough stems removed, None  Crushed red pepper flakes, 1 pound fresh mozzarella coarsely grated, 1 pound whole-milk ricotta, 1 cup finely grated parmesan, 1 tbsp finely grated lemon zest, 2 tsps minced fresh sage, 1 tsp minced fresh rosemary, 0.25 cup unsalted butter, 0.25 cup unbleached all-purpose flour, 5 cups half-and-half, 0.13 tsp freshly grated nutmeg, 1  bay leaf, None  Kosher salt freshly ground pepper, 1 pound lasagna noodles, 0.75 cup finely grated parmesan",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "2-lb. butternut squash peeled halved seeded cut crosswise into 1/4-inch-thick slices, olive oil plus more, None  Kosher salt freshly ground pepper, broccoli rabe tough stems removed, None  Crushed red pepper flakes, pound fresh mozzarella coarsely grated, pound whole-milk ricotta, finely grated parmesan, finely grated lemon zest, minced fresh sage, minced fresh rosemary, unsalted butter, unbleached all-purpose flour, half-and-half, freshly grated nutmeg, bay leaf, None  Kosher salt freshly ground pepper, pound lasagna noodles, finely grated parmesan"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca1f",
+        "title": "St. Patrick's Chocolate & Mint Cheesecake Bars",
+        "image_url": "http://forkify-api.herokuapp.com/images/79484833e4.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/St-Patricks-Chocolate--Mint-Cheesecake-Bars/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  package chocolate fudge cake mix with pudding, 0.5 cup butter softened, 3  packages cream cheese softened, 1  container cream cheese flavored frosting, 3  eggs, 6  drops green food coloring or as needed, 3  drops creme de menthe candy flavoring or as needed, 1  package dark chocolate and mint chips",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "package chocolate fudge cake mix with pudding, butter softened, packages cream cheese softened, container cream cheese flavored frosting, eggs, drops green food coloring or as needed, drops creme de menthe candy flavoring or as needed, package dark chocolate and mint chips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc9fd",
+        "title": "Starry toffee cake squares",
+        "image_url": "http://forkify-api.herokuapp.com/images/2246_MEDIUM2158.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2246/starry-toffee-cake-squares",
+        "cooking_time": 60,
+        "ingredients": "200 g butter plus extra for greasing, 200 g golden syrup, 300 g self-raising flour, 200 g light muscovado sugar, 3  medium eggs, 2 tbsps milk, 4 tbsps icing sugar, None  Half a 454g pack yellow marzipan, None  Red and green food colouring",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "butter plus extra for greasing, golden syrup, self-raising flour, light muscovado sugar, medium eggs, milk, icing sugar, None  Half a 454g pack yellow marzipan, None  Red and green food colouring"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccd6",
+        "title": "Steak Bites",
+        "image_url": "http://forkify-api.herokuapp.com/images/3190843697_88ceb2c27f8217.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2009/01/steak-bites/",
+        "cooking_time": 45,
+        "ingredients": "1 pound sirloin steak or pre-cut beef tips, None  Kosher salt to taste, None  Fresh ground black pepper to taste, 2 tbsps butter",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "pound sirloin steak or pre-cut beef tips, None  Kosher salt to taste, None  Fresh ground black pepper to taste, butter"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb70",
+        "title": "Steak Fajitas",
+        "image_url": "http://forkify-api.herokuapp.com/images/steakfajitasa300x200250237ba.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/steak_fajitas/",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp vegetable oil, 1  lb of flank steak skirt steak or carne asada, 1  large yellow onion peeled and sliced with the grain not against the grain as one would normally slice an onion. slice first in half and then slice off sections a half inch wide at widest point., 2  bell peppers of various colors stemmed seeded de-ribbed sliced lengthwise into strips, None  Salt, None  Juice of 1 lime, 2 tbsps of olive oil, 2  cloves garlic peeled minced, 0.5 tsp ground cumin, 1  fresh jalapeo pepper seeded ribs removed finely chopped, 0.25 cup chopped fresh cilantro including stems",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "vegetable oil, lb of flank steak skirt steak or carne asada, large yellow onion peeled and sliced with the grain not against the grain as one would normally slice an onion. slice first in half and then slice off sections a half inch wide at widest point., bell peppers of various colors stemmed seeded de-ribbed sliced lengthwise into strips, None  Salt, None  Juice of ime, of olive oil, cloves garlic peeled minced, ground cumin, fresh jalapeo pepper seeded ribs removed finely chopped, chopped fresh cilantro including stems"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc46",
+        "title": "Steak Fingers & Gravy",
+        "image_url": "http://forkify-api.herokuapp.com/images/steakfingers0a45.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/07/steak-fingers-with-gravy/",
+        "cooking_time": 60,
+        "ingredients": "2 pounds tenderized round steak or cube steak cut into 1-inch strips, 1 cup flour, 1 tsp seasoned salt, 0.5 tsp black pepper, 0.25 tsp cayenne, 3  whole eggs, 1 cup milk, None  Canola oil and butter for frying, 2 cups milk, None  Salt and pepper to taste",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "tenderized round steak or cube steak cut into 1-inch strips, flour, seasoned salt, black pepper, cayenne, whole eggs, milk, None  Canola oil and butter for frying, milk, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbf0",
+        "title": "Steak With Corn and Black-Eyed Pea Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/blackeyedpeasaladsteak_300cd5566fb.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/steak-corn-black-eyed-peas-00100000083450/index.html",
+        "cooking_time": 60,
+        "ingredients": "1.5 pounds strip or sirloin steaks, 1 tbsp seafood seasoning, 2  kosher salt and black pepper, 1  ears corn shucked, 3 tbsps small red onion cut into 1/2-inch wedges, 1  olive oil, 2 tbsps 15.5-oz can black-eyed peas rinsed, 1 tbsp chopped fresh chives",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "strip or sirloin steaks, seafood seasoning, kosher salt and black pepper, ears corn shucked, small red onion cut into 1/2-inch wedges, olive oil, 15.5-oz can black-eyed peas rinsed, chopped fresh chives"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf1b",
+        "title": "Steak with skinny sweet potato fries",
+        "image_url": "http://forkify-api.herokuapp.com/images/889665_MEDIUM5d70.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/889665/steak-with-skinny-sweet-potato-fries",
+        "cooking_time": 60,
+        "ingredients": "2  sweet potatoes scrubbed, None  Olive oil, 2  small shallots chopped, 2 tsps white wine vinegar, 2 tsps hazelnuts toasted and chopped, 2 tbsps chopped tarragon, 3 tbsps chopped flat-leaf parsley, 2  lean fillet steaks",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "sweet potatoes scrubbed, None  Olive oil, small shallots chopped, white wine vinegar, hazelnuts toasted and chopped, chopped tarragon, chopped flat-leaf parsley, lean fillet steaks"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca20",
+        "title": "Steamed Lobster Tails",
+        "image_url": "http://forkify-api.herokuapp.com/images/94974917e3.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Steamed-Lobster-Tails/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "1 tbsp sea salt, 4  lobster tails, 0.5 cup butter melted",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "sea salt, lobster tails, butter melted"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd05e",
+        "title": "Sticky Rice Mango & Palm Syrup",
+        "image_url": "http://forkify-api.herokuapp.com/images/1106126_medium8244.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1719642/sticky-rice-mango-and-palm-syrup",
+        "cooking_time": 60,
+        "ingredients": "200 g thai taste thai sticky rice, 225 ml thai taste coconut milk, 3 tbsps thai taste palm sugar, 0.25 tsp salt, 1  - 2 ripe mangoes, 8  lychees peeled and stoned, None  For the palm syrup:, 100 g thai taste palm sugar, 4  mint leaves plus a few leaves to decorate",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "thai taste thai sticky rice, ml thai taste coconut milk, thai taste palm sugar, salt, - ripe mangoes, lychees peeled and stoned, None  For the palm syrup:, thai taste palm sugar, mint leaves plus a few leaves to decorate"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc8d6",
+        "title": "Sticky chocolate pudding with marshmallows",
+        "image_url": "http://forkify-api.herokuapp.com/images/845658_MEDIUMa7e4.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/845658/sticky-chocolate-pudding-with-marshmallows",
+        "cooking_time": 75,
+        "ingredients": "140 g butter melted plus extra for the dish, 375 g self-raising flour, 175 g caster sugar, 2 tsps baking powder, 6 tbsps cocoa powder, 350 ml milk, 3  eggs beaten, 1 tsp vanilla extract, None  Single cream or vanilla ice cream to serve, 450 g light muscovado sugar, 7 tbsps cocoa powder, 2  large handfuls marshmallows",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "butter melted plus extra for the dish, self-raising flour, caster sugar, baking powder, cocoa powder, ml milk, eggs beaten, vanilla extract, None  Single cream or vanilla ice cream to serve, light muscovado sugar, cocoa powder, large handfuls marshmallows"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0c3",
+        "title": "Sticky coconut rice, mango & passion fruit",
+        "image_url": "http://forkify-api.herokuapp.com/images/166632_MEDIUM5474.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/166632/sticky-coconut-rice-mango-and-passion-fruit",
+        "cooking_time": 75,
+        "ingredients": "250 g thai sticky rice, 225 ml unsweetened coconut milk, 85 g golden caster sugar, None  Juice 1 lime, 1  ripe mango peeled stoned and chopped, None  Juice 1 orange, 1 tbsp lime juice, 50 g golden caster sugar, 1  ripe mangoes peeled halved and very thinly sliced, 3  passion fruits halved, None  Small mint leaves, None  Zest 1 lime cut into julienne strips",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "thai sticky rice, ml unsweetened coconut milk, golden caster sugar, None  Juice ime, ripe mango peeled stoned and chopped, None  Juice orange, lime juice, golden caster sugar, ripe mangoes peeled halved and very thinly sliced, passion fruits halved, None  Small mint leaves, None  Zest ime cut into julienne strips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf86",
+        "title": "Sticky duck-dogs with chopped mango slaw & Chinese crisps",
+        "image_url": "http://forkify-api.herokuapp.com/images/2972683_MEDIUM0018.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2972683/sticky-duckdogs-with-chopped-mango-slaw-and-chines",
+        "cooking_time": 105,
+        "ingredients": "2  x packs half crispy duck with pancakes and hoisin sauce, 1 tbsp vegetable oil, 1 tsp chinese five-spice powder, 6 tbsps tomato ketchup, 5 tbsps clear honey, 4 tbsps soy sauce, 1 tbsp grated ginger or pure, 1  egg yolk, 6  hot dog rolls, 2 tbsps sesame seeds, 3 tbsps rice wine vinegar, 1 tbsp vegetable oil, None  Juice 2 limes, 1 tsp caster sugar or granulated sugar, 1  large mango peeled and cut into matchsticks, 400 oz chunk white cabbage finely shredded then roughly chopped a couple of times, 1  red chilli deseeded and finely sliced, 6  spring onions cut into matchsticks, None  Handful coriander leaves roughly chopped",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "x packs half crispy duck with pancakes and hoisin sauce, vegetable oil, chinese five-spice powder, tomato ketchup, clear honey, soy sauce, grated ginger or pure, egg yolk, hot dog rolls, sesame seeds, rice wine vinegar, vegetable oil, None  Juice imes, caster sugar or granulated sugar, large mango peeled and cut into matchsticks, chunk white cabbage finely shredded then roughly chopped a couple of times, red chilli deseeded and finely sliced, spring onions cut into matchsticks, None  Handful coriander leaves roughly chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcecd",
+        "title": "Sticky toffee pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/4257_MEDIUMcf1c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/4257/sticky-toffee-pudding",
+        "cooking_time": 60,
+        "ingredients": "200 g dried dates stoned and chopped. buy medjool if you can, 250 ml black tea, 1 tsp bicarbonate of soda, 85 g unsalted butter softened, 175 g self-raising flour, 1 tsp mixed spice, 175 g golden caster sugar, 2  eggs beaten, 100 g light muscovado sugar, 100 g unsalted butter, 142 ml carton double cream",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "dried dates stoned and chopped. buy medjool if you can, ml black tea, bicarbonate of soda, unsalted butter softened, self-raising flour, mixed spice, golden caster sugar, eggs beaten, light muscovado sugar, unsalted butter, ml carton double cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca2a",
+        "title": "Summer Chicken Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/340425ebd.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Summer-Chicken-Salad/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1.5 pounds boneless chicken breast halves - cooked cooled and cubed, 1  can mandarin oranges drained, 1  can pineapple chunks drained and cut in half, 0.5 cup chopped pecans, 1 cup light mayonnaise, 2 tsps dried dill weed, 2 tsps white sugar",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "boneless chicken breast halves - cooked cooled and cubed, can mandarin oranges drained, can pineapple chunks drained and cut in half, chopped pecans, light mayonnaise, dried dill weed, white sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb71",
+        "title": "Stir Fried Japanese Eggplant with Ginger and Miso",
+        "image_url": "http://forkify-api.herokuapp.com/images/japaneseeggplantgingermisoa300x2006c433ec6.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/stir_fried_japanese_eggplant_with_ginger_and_miso/",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps good quality miso, 1.5 tsps sake, 1 pound japanese eggplants, 6 tbsps canola oil cold-pressed sesame oil grape seed oil rice bran oil or other high smoke-point oil, 2  whole dried red chili peppers torn in half, 1 tbsp peeled slivered fresh ginger, 1 tbsp finely sliced shiso leaves thai basil leaves or fresh mint leaves",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "good quality miso, sake, pound japanese eggplants, canola oil cold-pressed sesame oil grape seed oil rice bran oil or other high smoke-point oil, whole dried red chili peppers torn in half, peeled slivered fresh ginger, finely sliced shiso leaves thai basil leaves or fresh mint leaves"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb72",
+        "title": "Stir Fry Ginger Beef",
+        "image_url": "http://forkify-api.herokuapp.com/images/gingerbeef300x20098eb8ba9.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/stir_fry_ginger_beef/",
+        "cooking_time": 90,
+        "ingredients": "2 tbsps unseasoned rice vinegar, 5 tbsps soy sauce, 1 tbsp honey, 1 tbsp peeled grated fresh ginger, 1 tsp chile pepper flakes, 1 tsp ground cumin, 1  1 1/4 to 1 1/2 lb top sirloin steak, 1 tbsp corn starch, 2 tbsps vegetable oil, 1 tbsp sesame oil, 3  green onions cut on a diagonal 1/2-inch apart including the greens, 2  cloves garlic thinly sliced, 2  hot chiles preferably red serranos seeded sliced, 1  nob of ginger peeled cut lengthwise into matchstick shapes, 0.5 cup loosely packed chopped cilantro",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "unseasoned rice vinegar, soy sauce, honey, peeled grated fresh ginger, chile pepper flakes, ground cumin, 1/to 1/top sirloin steak, corn starch, vegetable oil, sesame oil, green onions cut on a diagonal 1/2-inch apart including the greens, cloves garlic thinly sliced, hot chiles preferably red serranos seeded sliced, nob of ginger peeled cut lengthwise into matchstick shapes, loosely packed chopped cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd87",
+        "title": "Stir-Fried Lettuces with Crispy Shallots",
+        "image_url": "http://forkify-api.herokuapp.com/images/stirfriedlettuceswithcrispyshallots646bc2c.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2012/02/stir-fried-lettuces-with-crispy-shallots",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps vegetable oil, 0.5 cup thinly sliced shallots, None  Kosher salt and freshly ground black pepper, 0.25 cup 1/8\"-thick slices cured sausage quartered if desired, 2 tbsps thinly sliced garlic, 1.5 tbsps minced peeled ginger, 0.25 tsp crushed red pepper flakes, 6 cups coarsely chopped iceberg lettuce, 4 cups watercress trimmed cut into 2\" pieces, 4 cups cooked brown rice",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "vegetable oil, thinly sliced shallots, None  Kosher salt and freshly ground black pepper, 1/8\"-thick slices cured sausage quartered if desired, thinly sliced garlic, minced peeled ginger, crushed red pepper flakes, coarsely chopped iceberg lettuce, watercress trimmed cut into 2\" pieces, cooked brown rice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc98c",
+        "title": "Stir-Fried Lettuces with Crispy Shallots",
+        "image_url": "http://forkify-api.herokuapp.com/images/3887033778.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Stir-Fried-Lettuces-with-Crispy-Shallots-388703",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps vegetable oil, 0.5 cup thinly sliced shallots, None  Kosher salt and freshly ground black pepper, 0.25 cup 1/8\"-thick slices cured sausage quartered if desired, 2 tbsps thinly sliced garlic, 1.5 tbsps minced peeled ginger, 0.25 tsp crushed red pepper flakes, 6 cups coarsely chopped iceberg lettuce, 4 cups watercress trimmed cut into 2\" pieces, 4 cups cooked brown rice",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "vegetable oil, thinly sliced shallots, None  Kosher salt and freshly ground black pepper, 1/8\"-thick slices cured sausage quartered if desired, thinly sliced garlic, minced peeled ginger, crushed red pepper flakes, coarsely chopped iceberg lettuce, watercress trimmed cut into 2\" pieces, cooked brown rice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf04",
+        "title": "Stone Crab with Mustard Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/51126840ceab.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Stone-Crab-with-Mustard-Sauce-51126840",
+        "cooking_time": 60,
+        "ingredients": "3 tbsps dry mustard, 0.5 tsp turbinado sugar, 1 cup safflower or canola oil, 1  small clove garlic peeled and minced, 1  small shallot peeled and minced, 2  large egg yolks, None  Juice of 1 large lemon, 1 tbsp dijon mustard, 1 tsp kosher salt, 0.5 tsp cayenne pepper, 5 pounds stone crab claws cracked",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "dry mustard, turbinado sugar, safflower or canola oil, small clove garlic peeled and minced, small shallot peeled and minced, large egg yolks, None  Juice of arge lemon, dijon mustard, kosher salt, cayenne pepper, stone crab claws cracked"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfc1",
+        "title": "Stone Fruit Gazpacho with Scallops",
+        "image_url": "http://forkify-api.herokuapp.com/images/395553d18a.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Stone-Fruit-Gazpacho-with-Scallops-395553",
+        "cooking_time": 75,
+        "ingredients": "1 pound white peaches pitted, 1 pound sour plums pitted, 2 cups cubed yellow seedless watermelon, 1  clove garlic coarsely chopped, 1  shallot coarsely chopped, 1 tbsp champagne vinegar, 1 cup plus 34 tbsp fruity olive oil, None  Salt, None  Freshly ground black pepper, 4  jumbo diver scallops, None  Espelette pepper, None  A few sprigs of fresh thyme",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "pound white peaches pitted, pound sour plums pitted, cubed yellow seedless watermelon, clove garlic coarsely chopped, shallot coarsely chopped, champagne vinegar, plus fruity olive oil, None  Salt, None  Freshly ground black pepper, jumbo diver scallops, None  Espelette pepper, None  A few sprigs of fresh thyme"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd9f",
+        "title": "Stone Fruit Slaw",
+        "image_url": "http://forkify-api.herokuapp.com/images/stonefruitslawh282a.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/07/stone-fruit-slaw",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp grated peeled fresh ginger, 1 tbsp unseasoned rice vinegar, 1 tbsp vegetable oil, 2 tsps light brown sugar, 0.25 tsp curry powder, 0.13 tsp crushed red pepper flakes, 1.5 pounds assorted firm stone fruit julienned, 2  scallions thinly sliced diagonally, None  Kosher salt and freshly ground black pepper",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "grated peeled fresh ginger, unseasoned rice vinegar, vegetable oil, light brown sugar, curry powder, crushed red pepper flakes, assorted firm stone fruit julienned, scallions thinly sliced diagonally, None  Kosher salt and freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd73",
+        "title": "Stone-Fruit Sangria",
+        "image_url": "http://forkify-api.herokuapp.com/images/stonefruitsangria646e7d1.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/08/stone-fruit-sangria",
+        "cooking_time": 75,
+        "ingredients": "1  apricot, 1  nectarine, 1  small peach, 2 tbsps fresh lemon juice, 2  750-ml bottles chilled dry ros&eacute;, 2 cups chilled elderflower liqueur, 1  vanilla bean halved lengthwise, 3  plums or pluots, 2  nectarines, 2  apricots, 1  peach, 20  fresh cherries, None  Sparkling water",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "apricot, nectarine, small peach, fresh lemon juice, 750-ml bottles chilled dry ros&eacute;, chilled elderflower liqueur, vanilla bean halved lengthwise, plums or pluots, nectarines, apricots, peach, fresh cherries, None  Sparkling water"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca21",
+        "title": "Strawberry Angel Food Dessert",
+        "image_url": "http://forkify-api.herokuapp.com/images/189466e93.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Strawberry-Angel-Food-Dessert/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  angel food cake, 2  packages cream cheese softened, 1 cup white sugar, 1  container frozen whipped topping thawed, 1  quart fresh strawberries sliced, 1  jar strawberry glaze",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "angel food cake, packages cream cheese softened, white sugar, container frozen whipped topping thawed, quart fresh strawberries sliced, jar strawberry glaze"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce44",
+        "title": "Strawberry BBQ Chicken Club Sandwich with Bacon, Avocado and Goat Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/StrawberryBBQChickenClubSandwichwithBacon,AvocadoandGoatCheese50097687483eb36.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://feedproxy.google.com/~r/ClosetCooking/~3/a9olypupgMM/strawberry-bbq-chicken-club-sandwich.html",
+        "cooking_time": 75,
+        "ingredients": "2  small chicken breasts pounded thin, None  Salt and pepper to taste, 0.25 cup roasted strawberry bbq sauce, 2  buns, 2  leaves lettuce, 2  slices tomato, 4  strips bacon cooked, 1  small avocado sliced, 2 tbsps roasted strawberry bbq sauce, 2 tbsps goat cheese crumbled",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "small chicken breasts pounded thin, None  Salt and pepper to taste, roasted strawberry bbq sauce, buns, leaves lettuce, slices tomato, strips bacon cooked, small avocado sliced, roasted strawberry bbq sauce, goat cheese crumbled"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce46",
+        "title": "Strawberry BBQ Chicken Spinach and Quinoa Salad with Bacon, Avocado and Goat Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/StrawberryBBQChickenQuinoaSaladwithBacon,AvocadoandGoatCheese500006747df0636.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://feedproxy.google.com/~r/ClosetCooking/~3/B9Lj_fsi334/strawberry-bbq-chicken-spinach-and.html",
+        "cooking_time": 75,
+        "ingredients": "1 cup quinoa well rinsed, 1.5 cups water, 2 cups baby spinach, 1 cup cooked chicken shredded or diced, 1 cup strawberries, 1 cup avocado, 0.25 cup goat cheese crumbled, 4  strips bacon cooked and crumbled, 0.25 cup roasted strawberry bbq sauce, 2  green onions, None  Cilantro to taste",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "quinoa well rinsed, water, baby spinach, cooked chicken shredded or diced, strawberries, avocado, goat cheese crumbled, strips bacon cooked and crumbled, roasted strawberry bbq sauce, green onions, None  Cilantro to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcadd",
+        "title": "Strawberry Greek Yogurt Banana Bread",
+        "image_url": "http://forkify-api.herokuapp.com/images/Greek2BYogurt2BStrawberry2BBanana2BBread2B5002B33932855f563.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/07/strawberry-greek-yogurt-banana-bread.html",
+        "cooking_time": 75,
+        "ingredients": "1.75 cups flour, 1 tsp baking powder, 0.5 tsp baking soda, 0.5 tsp salt, 0.5 cup brown sugar, 3  large ripe bananas, 2  eggs, 1 tsp vanilla extract, 0.5 cup greek yogurt, 1 cup strawberries sliced",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "flour, baking powder, baking soda, salt, brown sugar, large ripe bananas, eggs, vanilla extract, greek yogurt, strawberries sliced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbad",
+        "title": "Strawberry Ice Cream Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/strawberryicecream_3003cf12bb8.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/strawberry-ice-cream-cake-10000001060042/index.html",
+        "cooking_time": 30,
+        "ingredients": "2  pints vanilla ice cream, 20  small strawberries hulled and cut into small pieces, 0.5 cup heavy cream",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "pints vanilla ice cream, small strawberries hulled and cut into small pieces, heavy cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca23",
+        "title": "Strawberry Kiwi Milkshakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/448351a900.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Strawberry-Kiwi-Milkshakes/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "4 cups sliced fresh strawberries, 4 cups sliced kiwifruit, 4 cups milk, 4 cups vanilla ice cream",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "sliced fresh strawberries, sliced kiwifruit, milk, vanilla ice cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf8e",
+        "title": "Strawberry Lemonade Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/StrawberryLemonadeCake489df.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/strawberry-lemonade-cake/",
+        "cooking_time": 105,
+        "ingredients": "1 cup butter at room temperature, 1.75 cups granulated sugar, 2 tbsps fresh lemon zest, 2.5 cups all-purpose gold medal flour, 1 tsp baking powder, 1 tsp baking soda, 0.5 tsp salt, 4  large eggs, 0.33 cup cup fresh lemon juice, 1 cup buttermilk, 8  large strawberries hulled and sliced, None  For the strawberry buttercream frosting:, 1 cup butter softened, 5 cups powdered sugar, 2 tbsps whole milk, 2  large strawberries chopped",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "butter at room temperature, granulated sugar, fresh lemon zest, all-purpose gold medal flour, baking powder, baking soda, salt, large eggs, cup fresh lemon juice, buttermilk, large strawberries hulled and sliced, None  For the strawberry buttercream frosting:, butter softened, powdered sugar, whole milk, large strawberries chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf92",
+        "title": "Strawberry Poke Cake with Whipped Cream Icing",
+        "image_url": "http://forkify-api.herokuapp.com/images/pokecake410x3071914.jpg",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/desserts/strawberry-poke-cake-with-whipped-cream-icing/",
+        "cooking_time": 45,
+        "ingredients": "1  package 1 package, 1  package 1 package, 1  package 1 package, 2 tsps 2 tsps, 8 tsps 8 tsps, 2 cups 2 cups, 1 tsp 1 teaspoon, 1 cup cups",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "package , package , package , , , , teaspoon, cups"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf3f",
+        "title": "Strawberry Pretzel Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/StrawberryPretzelDessertf50d.jpg",
+        "publisher": "My Baking Addiction",
+        "source_url": "http://www.mybakingaddiction.com/strawberry-pretzel-dessert/",
+        "cooking_time": 60,
+        "ingredients": "1.5 cups crushed salted pretzels, 4 tbsps white sugar, 10 tbsps unsalted butter melted, 1 cup granulated sugar, 2  packages cream cheese room temperature, 1 tsp pure vanilla extract, 1  container frozen whipped topping thawed, 1  package strawberry flavored gelatin, 2 cups boiling water",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "crushed salted pretzels, white sugar, unsalted butter melted, granulated sugar, packages cream cheese room temperature, pure vanilla extract, container frozen whipped topping thawed, package strawberry flavored gelatin, boiling water"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca24",
+        "title": "Strawberry Shortcake",
+        "image_url": "http://forkify-api.herokuapp.com/images/344130b63.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Strawberry-Shortcake/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "3  pints fresh strawberries, 0.5 cup white sugar, 2.25 cups all-purpose flour, 4 tsps baking powder, 2 tbsps white sugar, 0.25 tsp salt, 0.33 cup shortening, 1  egg, 0.67 cup milk, 2 cups whipped heavy cream",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "pints fresh strawberries, white sugar, all-purpose flour, baking powder, white sugar, salt, shortening, egg, milk, whipped heavy cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccd0",
+        "title": "Strawberry Shortcake Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/3520747438_7b4a71997e4e6e.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2009/05/strawberry-shortcakecake/",
+        "cooking_time": 105,
+        "ingredients": "None  Cake, 1.5 cups flour, 3 tbsps cornstarch, 0.5 tsp salt, 1 tsp baking soda, 9 tbsps unsalted butter softened, 1.5 cups sugar, 3  whole large eggs, 0.5 cup sour cream room temperature, 1 tsp vanilla, None  Icing, 0.5 pound cream cheese room temperature, 2  sticks unsalted butter, 1.5 pounds powdered sugar sifted, 1 tsp vanilla, 1 pound strawberries",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "None  Cake, flour, cornstarch, salt, baking soda, unsalted butter softened, sugar, whole large eggs, sour cream room temperature, vanilla, None  Icing, pound cream cheese room temperature, sticks unsalted butter, powdered sugar sifted, vanilla, pound strawberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdc5",
+        "title": "Strawberry Sorbato and Prosecco Floats",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_strawberry_sorbato_and_prosecco_floats_v6348.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/cookingclub/2009/04/strawberry_sorbato_and_prosecco_floats",
+        "cooking_time": 60,
+        "ingredients": "1.5 pounds ripe strawberries sliced, 1 cup sugar, None  Pinch of salt, 0.75 cup heavy whipping cream, 1.5 tbsps fresh lemon juice, 1  750-ml bottle prosecco or other sparkling white wine chilled, None  Ice cream maker",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "ripe strawberries sliced, sugar, None  Pinch of salt, heavy whipping cream, fresh lemon juice, 750-ml bottle prosecco or other sparkling white wine chilled, None  Ice cream maker"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc47",
+        "title": "Strawberry Sparkle Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/sparkle7fbe.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/07/strawberry-sparkle-cake/",
+        "cooking_time": 90,
+        "ingredients": "None  Angle food cake, 15  whole egg whites at room temperature, 1 tsp cream of tartar, 1.5 cups plus 2 tbsp sugar sifted three times, 1 cup cake flour, 0.25 tsp salt, 1 tsp vanilla, None  Filling, 1  package strawberry jello, 2.5 cups boiling water, 1  package frozen sliced strawberries, None  Icing, 1.5 cups heavy cream, 2 tbsps sugar",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "None  Angle food cake, whole egg whites at room temperature, cream of tartar, plus sugar sifted three times, cake flour, salt, vanilla, None  Filling, package strawberry jello, boiling water, package frozen sliced strawberries, None  Icing, heavy cream, sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca25",
+        "title": "Strawberry Spinach Salad I",
+        "image_url": "http://forkify-api.herokuapp.com/images/111394449f.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Strawberry-Spinach-Salad-I/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps sesame seeds, 1 tbsp poppy seeds, 0.5 cup white sugar, 0.5 cup olive oil, 0.25 cup distilled white vinegar, 0.25 tsp paprika, 0.25 tsp worcestershire sauce, 1 tbsp minced onion, 10 oz fresh spinach - rinsed dried and torn into bite-size pieces, 1  quart strawberries - cleaned hulled and sliced, 0.25 cup almonds blanched and slivered",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "sesame seeds, poppy seeds, white sugar, olive oil, distilled white vinegar, paprika, worcestershire sauce, minced onion, fresh spinach - rinsed dried and torn into bite-size pieces, quart strawberries - cleaned hulled and sliced, almonds blanched and slivered"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc03",
+        "title": "Strawberry Vanilla Pudding Poke Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/cake21410x30716a4.jpg",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/desserts/strawberry-vanilla-pudding-poke-cake/",
+        "cooking_time": 60,
+        "ingredients": "1  box 1 box, 1  box 1 box, 1 cup 1 cup, 1 cup cups, 1  box 1 box, 2 cups 2 cups, 1  container 1 container",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "box box, box box, , cups, box box, , container container"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcade",
+        "title": "Strawberry and Balsamic Grilled Chicken Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/Strawberry2Band2BBalsamic2BGrilled2BChicken2BSalad2B5002B05455fa48e36.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/05/strawberry-and-balsamic-grilled-chicken.html",
+        "cooking_time": 45,
+        "ingredients": "1 pound chicken breasts, 0.5 cup balsamic vinaigrette, 2 cups baby spinach, 2 cups arugula, 1 pint strawberries sliced, 4  strips bacon cooked, 4 oz goat cheese crumbled, 0.25 cup pecans or candied pecans, 1  roasted strawberry balsamic vinaigrette or balsamic vinaigrette",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "pound chicken breasts, balsamic vinaigrette, baby spinach, arugula, strawberries sliced, strips bacon cooked, goat cheese crumbled, pecans or candied pecans, roasted strawberry balsamic vinaigrette or balsamic vinaigrette"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca27",
+        "title": "Stuffed Cabbage Rolls",
+        "image_url": "http://forkify-api.herokuapp.com/images/884216a22.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Stuffed-Cabbage-Rolls/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "0.67 cup water, 0.33 cup uncooked white rice, 8  cabbage leaves, 1 pound lean ground beef, 0.25 cup chopped onion, 1  egg slightly beaten, 1 tsp salt, 0.25 tsp ground black pepper, 1  can condensed tomato soup",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "water, uncooked white rice, cabbage leaves, pound lean ground beef, chopped onion, egg slightly beaten, salt, ground black pepper, can condensed tomato soup"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc87d",
+        "title": "Stuffed Chicken Breast Recipe with Goat Cheese, Sun-Dried Tomatoes & Spinach",
+        "image_url": "http://forkify-api.herokuapp.com/images/StuffedChickenBreastSquare63bd.jpg",
+        "publisher": "Cookin Canuck",
+        "source_url": "http://www.cookincanuck.com/2013/03/stuffed-chicken-breasts-recipe-with-goat-cheese-sun-dried-tomatoes-spinach/",
+        "cooking_time": 45,
+        "ingredients": "0.5 cup goat cheese softened, 0.25 cup sun-dried tomatoes chopped, 1.5 cups fresh spinach leaves thinly sliced, 0.25 tsp salt, 0.25 tsp pepper, 4  boneless skinless chicken breasts, 2 tsps olive oil, 0.5 tsp salt, 0.5 tsp ground pepper",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "goat cheese softened, sun-dried tomatoes chopped, fresh spinach leaves thinly sliced, salt, pepper, boneless skinless chicken breasts, olive oil, salt, ground pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfa7",
+        "title": "Stuffed French toast",
+        "image_url": "http://forkify-api.herokuapp.com/images/563_1_1350908973_lrg59cc.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/fruit-recipes/stuffed-french-toast",
+        "cooking_time": 60,
+        "ingredients": "3  bananas peeled and thinly sliced, 2 tbsps runny honey, 100 g pecan nuts roughly chopped, 4  slices good-quality sliced white bread, 4  free-range eggs, 1  teacup milk, 1  knob butter, 1  sprinkle icing sugar, 1  small tub greek-style natural yoghurt",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "bananas peeled and thinly sliced, runny honey, pecan nuts roughly chopped, slices good-quality sliced white bread, free-range eggs, teacup milk, knob butter, sprinkle icing sugar, small tub greek-style natural yoghurt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce90",
+        "title": "Stuffed chicken breast",
+        "image_url": "http://forkify-api.herokuapp.com/images/3652_MEDIUM67b8.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3652/stuffed-chicken-breast",
+        "cooking_time": 75,
+        "ingredients": "4  skinless chicken breasts, 1  ball mozzarella sliced, 8  cherry tomatoes halved, None  A handful of basil leaves, 8  slices of parma ham or denhay ham, 4  red peppers, None  Olive oil, 1  punnet cherry tomato, 1  vegetable stock cube, 2 tbsps light muscovado sugar",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "skinless chicken breasts, ball mozzarella sliced, cherry tomatoes halved, None  A handful of basil leaves, slices of parma ham or denhay ham, red peppers, None  Olive oil, punnet cherry tomato, vegetable stock cube, light muscovado sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcefd",
+        "title": "Sufganiyot (Israeli Jelly Donuts) Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/10818_sufganiyot_jelly_doghnuts_620b3c5.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/10818-sufganiyot-israeli-jelly-doughnuts",
+        "cooking_time": 75,
+        "ingredients": "2 cups all-purpose flour plus more for dusting the baking sheet and rolling out the dough, 0.25 cup granulated sugar, 1  packet active dry yeast, 0.5 tsp fine salt, 2  large egg yolks, 0.75 cup warm whole milk, 2 tbsps unsalted butter at room temperature, 6 cups vegetable or canola oil for frying plus more for coating the bowl, 0.67 cup smooth jam or jelly, None  Powdered sugar for dusting",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "all-purpose flour plus more for dusting the baking sheet and rolling out the dough, granulated sugar, packet active dry yeast, fine salt, large egg yolks, warm whole milk, unsalted butter at room temperature, vegetable or canola oil for frying plus more for coating the bowl, smooth jam or jelly, None  Powdered sugar for dusting"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca28",
+        "title": "Sugar Cookie Icing",
+        "image_url": "http://forkify-api.herokuapp.com/images/47984dfdd.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sugar-Cookie-Icing/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "1 cup confectioners' sugar, 2 tsps milk, 2 tsps light corn syrup, 0.25 tsp almond extract, None  Assorted food coloring",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "confectioners' sugar, milk, light corn syrup, almond extract, None  Assorted food coloring"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca29",
+        "title": "Sugared Campfire Donuts",
+        "image_url": "http://forkify-api.herokuapp.com/images/3774177ea.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sugared-Campfire-Donuts/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "0.5 cup white sugar, 0.25 tsp ground cinnamon, 1  can refrigerated biscuit dough, 3 tbsps melted butter",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "white sugar, ground cinnamon, can refrigerated biscuit dough, melted butter"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd061",
+        "title": "Sweet potato & chorizo quesadillas",
+        "image_url": "http://forkify-api.herokuapp.com/images/2601643_MEDIUM5c8a.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2601643/sweet-potato-and-chorizo-quesadillas",
+        "cooking_time": 45,
+        "ingredients": "4  sweet potatoes, None  Small bunch coriander chopped, 200 g block feta cheese crumbled, 8  flour tortillas, 140 g sliced chorizo",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "sweet potatoes, None  Small bunch coriander chopped, block feta cheese crumbled, flour tortillas, sliced chorizo"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd2d",
+        "title": "Summer Green Bean Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/contigo_greenbean_salad7e71.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/summer-green-bean-salad-recipe.html",
+        "cooking_time": 45,
+        "ingredients": "None  - dirty girl green bean salad - cherry tomatoes creamy herb vinagreta hazelnuts, None  - patatas bravas - fried potatoes with allioli salsa brava, None  - wild lobster mushrooms and catalan farm corn - garlic butter thyme, None  - berenjenas fritas - fried rosa bianca eggplant with tomato salmorejo, None  - coca with gypy and red lipstick peppers sweet onions manchego herbs and marin sun farm egg",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "None  - dirty girl green bean salad - cherry tomatoes creamy herb vinagreta hazelnuts, None  - patatas bravas - fried potatoes with allioli salsa brava, None  - wild lobster mushrooms and catalan farm corn - garlic butter thyme, None  - berenjenas fritas - fried rosa bianca eggplant with tomato salmorejo, None  - coca with gypy and red lipstick peppers sweet onions manchego herbs and marin sun farm egg"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbb8",
+        "title": "Summer Shrimp Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/summershrimpsalad_30038a8e159.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/summer-shrimp-salad-10000001202708/index.html",
+        "cooking_time": 75,
+        "ingredients": "1 pound frozen fully cooked medium shrimp thawed, 1  medium red onion thinly sliced, 4 cups watermelon roughly chopped, 2  jalapeos seeded and finely chopped, 2  avocados roughly chopped, 1 tsp juice of 1 lime, 3 tbsps honey, 0.75 tsp olive oil, 0.25 tsp kosher salt, 0.5 cup black pepper",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "pound frozen fully cooked medium shrimp thawed, medium red onion thinly sliced, watermelon roughly chopped, jalapeos seeded and finely chopped, avocados roughly chopped, juice of ime, honey, olive oil, kosher salt, black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccb3",
+        "title": "Summer Stir-Fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/4726442102_6739483506_b2247.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/06/summer-stir-fry/",
+        "cooking_time": 45,
+        "ingredients": "2 tbsps butter, 2 tbsps olive oil, 4  cloves garlic minced, 12  whole jumbo shrimp peeled deveined tails left on, 2  whole zucchini sliced on a slight diagonal, 2  ears corn kernels sliced off, 0.5 cup grape tomatoes sliced in half lengthwise, None  Salt and freshly ground pepper to taste, None  Chopped fresh herbs if desired",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "butter, olive oil, cloves garlic minced, whole jumbo shrimp peeled deveined tails left on, whole zucchini sliced on a slight diagonal, ears corn kernels sliced off, grape tomatoes sliced in half lengthwise, None  Salt and freshly ground pepper to taste, None  Chopped fresh herbs if desired"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd105",
+        "title": "Summer Vegetable Stir-Fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/511082606e2d.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Summer-Vegetable-Stir-Fry-51108260",
+        "cooking_time": 60,
+        "ingredients": "3 cups mixed tender herbs divided, 0.5 cup thinly sliced scallions divided, 1  1/2\" piece peeled ginger sliced, 1  garlic clove, 7 tbsps vegetable oil divided, 2 tbsps unseasoned rice vinegar, 2 tbsps sesame seeds, None  Kosher salt and freshly ground black pepper, 2 cups cooked cooled wheat berries farro or brown rice, 4 cups chopped mixed summer vegetables",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "mixed tender herbs divided, thinly sliced scallions divided, 1/2\" piece peeled ginger sliced, garlic clove, vegetable oil divided, unseasoned rice vinegar, sesame seeds, None  Kosher salt and freshly ground black pepper, cooked cooled wheat berries farro or brown rice, chopped mixed summer vegetables"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0e0",
+        "title": "Summer pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/4516_MEDIUM1bd8.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/4516/summer-pudding",
+        "cooking_time": 45,
+        "ingredients": "300 g strawberries, 250 g blackberries, 100 g redcurrants, 500 g raspberries, None  Or 1.25kg/2lb 12oz mixed berries and currants of your choice, 175 g golden caster sugar, 7  slices day-old white bread from a square medium-cut loaf",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "strawberries, blackberries, redcurrants, raspberries, None  Or 1.25kg/2lb 12oz mixed berries and currants of your choice, golden caster sugar, slices day-old white bread from a square medium-cut loaf"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca2b",
+        "title": "Summertime Tropical Fruit Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/197279a5c6.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Summertime-Tropical-Fruit-Salad/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  mango - peeled seeded and cubed, 1  papaya - peeled seeded and cubed, 2  mandarin oranges peeled and segmented, 2  kiwis peeled and sliced, 1  fresh pineapple - peeled cored and cubed, 1  package cream cheese room temperature, 1  jar marshmallow fluff, 1 tbsp vanilla extract",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "mango - peeled seeded and cubed, papaya - peeled seeded and cubed, mandarin oranges peeled and segmented, kiwis peeled and sliced, fresh pineapple - peeled cored and cubed, package cream cheese room temperature, jar marshmallow fluff, vanilla extract"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd38",
+        "title": "Sunchoke and Cashew Stir-fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/sunchoke_cashew_stirfry_recipe9ba2.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/sunchoke-and-cashew-stirfry-recipe.html",
+        "cooking_time": 105,
+        "ingredients": "1 tsp peanut or sunflower oil, 1  egg beaten, 1 tbsp peanut or sunflower oil plus more if needed, 1 tbsp minced ginger, 2  cloves minced garlic, 3  medium shallots chopped, 1  serrano chile pepper deveined and minced, 1 cup very thinly sliced sunchokes well scrubbed, None  Kernels from 2 ears of corn, -0.5 cup day-old cooked brown rice, 1  egg beaten, 1 tbsp soy sauce plus more to taste, 0.33 cup toasted almond slices, 0.5 cup toasted cashews, None  Fine grain sea salt and pepper to taste, None  Plenty of chopped fresh basil",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "peanut or sunflower oil, egg beaten, peanut or sunflower oil plus more if needed, minced ginger, cloves minced garlic, medium shallots chopped, serrano chile pepper deveined and minced, very thinly sliced sunchokes well scrubbed, None  Kernels from ears of corn, -day-old cooked brown rice, egg beaten, soy sauce plus more to taste, toasted almond slices, toasted cashews, None  Fine grain sea salt and pepper to taste, None  Plenty of chopped fresh basil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca2c",
+        "title": "Sunshine Hummus Melts",
+        "image_url": "http://forkify-api.herokuapp.com/images/8674477943.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sunshine-Hummus-Melts/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "8  slices multigrain bread, 1 cup hummus, 2  granny smith apples thinly sliced, 1 cup shredded sharp cheddar cheese",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "slices multigrain bread, hummus, granny smith apples thinly sliced, shredded sharp cheddar cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc868",
+        "title": "Super tasty Spanish roast chicken",
+        "image_url": "http://forkify-api.herokuapp.com/images/577_1_1350912080_lrg9b99.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/chicken-recipes/super-tasty-spanish-roast-chicken",
+        "cooking_time": 45,
+        "ingredients": "1.6 kg potatoes peeled and cut into 2.5cm dice, 4  lemons, 1  handful fresh flat-leaf parsley, 2 kg higher-welfare chicken, None  Sea salt, None  Freshly ground black pepper, 300 g iberico chorizo sausage, None  Olive oil, 2  cloves garlic peeled and finely chopped",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "potatoes peeled and cut into 2.5cm dice, lemons, handful fresh flat-leaf parsley, higher-welfare chicken, None  Sea salt, None  Freshly ground black pepper, iberico chorizo sausage, None  Olive oil, cloves garlic peeled and finely chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbf4",
+        "title": "Sweet potato wedges",
+        "image_url": "http://forkify-api.herokuapp.com/images/sweetpotatowedges_83345_16x9d54d.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/sweetpotatowedges_83345",
+        "cooking_time": 30,
+        "ingredients": "2  sweet potato, 4 tbsps olive oil, 1 tbsp thyme, None  Salt and freshly ground black pepper, None  To garnish chervil",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "sweet potato, olive oil, thyme, None  Salt and freshly ground black pepper, None  To garnish chervil"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfef",
+        "title": "Super-green mackerel salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/2853664_MEDIUM09ba.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2853664/supergreen-mackerel-salad",
+        "cooking_time": 45,
+        "ingredients": "85 g green beans, 85 g thin-stemmed broccoli, None  Large handful baby spinach leaves, 2  hot-smoked mackerel fillets skinned and flaked, 2 tsps sunflower seeds toasted, 75 ml low-fat natural yogurt, 1 tsp lemon juice, 1 tsp wholegrain mustard, 2 tsps dill chopped plus extra to serve",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "green beans, thin-stemmed broccoli, None  Large handful baby spinach leaves, hot-smoked mackerel fillets skinned and flaked, sunflower seeds toasted, ml low-fat natural yogurt, lemon juice, wholegrain mustard, dill chopped plus extra to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc3e",
+        "title": "Supreme Pizza Burgers",
+        "image_url": "http://forkify-api.herokuapp.com/images/burger53be.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/10/supreme-pizza-burgers/",
+        "cooking_time": 75,
+        "ingredients": "1.5 pounds ground beef, 0.5 pound italian sausage, 0.5 tsp italian seasoning, 8  slices mozzarella or provolone cheese, None  Pepperoni slices, 8 tbsps jarred marinara sauce plus a little more, None  Grated parmesan cheese, 4  whole kaiser rolls or good hamburger buns, None  Thinly sliced red onion, 1  whole green bell pepper sliced thick, None  Sliced black olives, None  Sliced mushrooms",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "ground beef, pound italian sausage, italian seasoning, slices mozzarella or provolone cheese, None  Pepperoni slices, jarred marinara sauce plus a little more, None  Grated parmesan cheese, whole kaiser rolls or good hamburger buns, None  Thinly sliced red onion, whole green bell pepper sliced thick, None  Sliced black olives, None  Sliced mushrooms"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc42",
+        "title": "Surf & Turf Cajun Pasta",
+        "image_url": "http://forkify-api.herokuapp.com/images/cajun3e5c5.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/09/surf-turf-cajun-pasta/",
+        "cooking_time": 90,
+        "ingredients": "4  whole 6-oz beef filet steaks 1 1/2 inches thick, None  Cajun seasoning, 2 tbsps butter, 3 tbsps olive oil, 1 pound jumbo shrimp deveined & shells removed, 1  whole small red onion halved and sliced, 1  whole green bell pepper seeded halved and sliced, 1  whole red bell pepper seeded halved and sliced, 3  cloves garlic minced, 0.5 cup white wine, 1.5 cups low-sodium chicken broth, 0.75 cup heavy cream, 0.5 cup parmesan cheese grated, 2  whole tomatoes diced, None  Minced parsley to taste, 1 pound fettuccine rigatoni or other noodle",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "whole 6-oz beef filet steaks 1/inches thick, None  Cajun seasoning, butter, olive oil, pound jumbo shrimp deveined & shells removed, whole small red onion halved and sliced, whole green bell pepper seeded halved and sliced, whole red bell pepper seeded halved and sliced, cloves garlic minced, white wine, low-sodium chicken broth, heavy cream, parmesan cheese grated, whole tomatoes diced, None  Minced parsley to taste, pound fettuccine rigatoni or other noodle"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd3f",
+        "title": "Sushi Bowl",
+        "image_url": "http://forkify-api.herokuapp.com/images/sushi_bowl_recipe9026.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/sushi-bowl-recipe.html",
+        "cooking_time": 75,
+        "ingredients": "2 cups short-grain brown rice, 3.5 cups water, 2 tsps fine grain sea salt, 2  square sheets nori seaweed, 6 oz extra-firm tofu, None  Grated zest and juice of one orange, None  Grated zest and juice of 1/2 lemon, 2 tbsps brown sugar, 2 tbsps shoyu sauce, 2 tbsps rice vinegar, 4  green onions chopped, 1  avocado peeled pitted and thinly sliced, 3 tbsps sesame seeds toasted",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "short-grain brown rice, water, fine grain sea salt, square sheets nori seaweed, extra-firm tofu, None  Grated zest and juice of one orange, None  Grated zest and juice of 1/emon, brown sugar, shoyu sauce, rice vinegar, green onions chopped, avocado peeled pitted and thinly sliced, sesame seeds toasted"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfc2",
+        "title": "Sushi Dip",
+        "image_url": "http://forkify-api.herokuapp.com/images/IMG_0589410x2736ac7.jpg",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/appetizers-and-snacks/sushi-dip/",
+        "cooking_time": 30,
+        "ingredients": "8 oz weight 8 ozs weight, 2 tsps 2 tsps, 1 cup cups, 1 tbsp 1 tablespoon, 1  whole 1 whole",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "weight s weight, , cups, tablespoon, whole whole"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf3b",
+        "title": "Sushi Rice",
+        "image_url": "http://forkify-api.herokuapp.com/images/epicuriousfacebook511b.png",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Sushi-Rice-351070",
+        "cooking_time": 30,
+        "ingredients": "2 cups short-grain white rice, 3 tbsps unseasoned rice vinegar, 4.5 tsps sugar, 1.5 tsps kosher or coarse sea salt, 1  piece kombu* wiped lightly with damp cloth, None  *available at asian markets and some health food stores",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "short-grain white rice, unseasoned rice vinegar, sugar, kosher or coarse sea salt, piece kombu* wiped lightly with damp cloth, None  *available at asian markets and some health food stores"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca2f",
+        "title": "Sushi Roll",
+        "image_url": "http://forkify-api.herokuapp.com/images/692820a91.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sushi-Roll/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "0.67 cup uncooked short-grain white rice, 3 tbsps rice vinegar, 3 tbsps white sugar, 1.5 tsps salt, 4  sheets nori seaweed sheets, 1  cucumber peeled cut into small strips, 2 tbsps pickled ginger, 1  avocado, 0.5 pound imitation crabmeat flaked",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "uncooked short-grain white rice, rice vinegar, white sugar, salt, sheets nori seaweed sheets, cucumber peeled cut into small strips, pickled ginger, avocado, pound imitation crabmeat flaked"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce18",
+        "title": "Sushi Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/sushisalade90f.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/sushi-salad/",
+        "cooking_time": 120,
+        "ingredients": "1 cup short grain brown rice, 2.25 cups water, 0.25 cup plus 3 tbsp rice vinegar, 0.25 cup granulated sugar, 1.5 tsps salt, 1 tbsp sesame seeds, 3 tbsps canola oil, 2 tbsps finely chopped pickled ginger, 3  green onions chopped, 2  medium carrots chopped, 1  large seedless cucumber peeled and chopped, 1 cup shelled edamame, 2  sheets nori cut into thin strips, 1  avocado peeled pitted and sliced, None  For the dressing:, 2 tsps wasabi powder, 1 tbsp hot water, 2 tbsps cold water, 2 tbsps soy sauce, 2 tsps ginger juice",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "short grain brown rice, water, plus rice vinegar, granulated sugar, salt, sesame seeds, canola oil, finely chopped pickled ginger, green onions chopped, medium carrots chopped, large seedless cucumber peeled and chopped, shelled edamame, sheets nori cut into thin strips, avocado peeled pitted and sliced, None  For the dressing:, wasabi powder, hot water, cold water, soy sauce, ginger juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc998",
+        "title": "Sushi hand rolls (temaki)",
+        "image_url": "http://forkify-api.herokuapp.com/images/1931690_MEDIUMbc6c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1931690/sushi-hand-rolls-temaki",
+        "cooking_time": 90,
+        "ingredients": "7  sheets nori, None  Wasabi to serve, None  Pickled ginger to serve, None  Soy sauce to serve, 150 g salmon or tuna cut into strips, None  Avocado peeled and cut into strips, None  Cucumber seeds removed and cut into strips, 150 g cooked peeled prawns, 2  spring onions finely chopped, 250 g sushi rice, 50 ml japanese rice vinegar, 40 g golden caster sugar, 3  piece kombu, 6 tbsps mayonnaise, 5 tbsps thai chilli paste or chilli garlic sauce, None  Lemon juiced",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "sheets nori, None  Wasabi to serve, None  Pickled ginger to serve, None  Soy sauce to serve, salmon or tuna cut into strips, None  Avocado peeled and cut into strips, None  Cucumber seeds removed and cut into strips, cooked peeled prawns, spring onions finely chopped, sushi rice, ml japanese rice vinegar, golden caster sugar, piece kombu, mayonnaise, thai chilli paste or chilli garlic sauce, None  Lemon juiced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc976",
+        "title": "Sushi rice bowl with beef, egg & chilli sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/1841638_MEDIUM3f6c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1841638/sushi-rice-bowl-with-beef-egg-and-chilli-sauce",
+        "cooking_time": 60,
+        "ingredients": "140 g sushi rice, 250 oz rump steak thinly sliced, 1  garlic clove chopped, 1 tbsp soy sauce, None  Good pinch sugar, 2 tbsps sesame oil, 2  eggs, 1  large carrot cut into long matchsticks, 1  large courgette cut into long matchsticks, 2 tbsps sweet and spicy chilli sauce",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "sushi rice, rump steak thinly sliced, garlic clove chopped, soy sauce, None  Good pinch sugar, sesame oil, eggs, large carrot cut into long matchsticks, large courgette cut into long matchsticks, sweet and spicy chilli sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc93d",
+        "title": "Sushi salad with seared tuna, avocado & rice wine dressing",
+        "image_url": "http://forkify-api.herokuapp.com/images/260613_MEDIUM9a08.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/260613/sushi-salad-with-seared-tuna-avocado-and-rice-wine",
+        "cooking_time": 75,
+        "ingredients": "100 g sushi rice, 2 tbsps rice vinegar, 2 tbsps sugar, 1  tuna steak, None  Coarsely ground black pepper, 1  sheet of nori seaweed sushi paper cut into shreds, 1  small avocado sliced, None  Small red onion thinly sliced, 1 tbsp toasted black or white sesame seeds, None  Soy sauce to serve",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "sushi rice, rice vinegar, sugar, tuna steak, None  Coarsely ground black pepper, sheet of nori seaweed sushi paper cut into shreds, small avocado sliced, None  Small red onion thinly sliced, toasted black or white sesame seeds, None  Soy sauce to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca30",
+        "title": "Sushi-Inspired Tuna Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/963112f8.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sushi-Inspired-Tuna-Salad/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  can solid white tuna packed in water drained, 0.5 cup mayonnaise, 1 tbsp wasabi paste or to taste, 1 tsp minced fresh ginger root, 1 tbsp minced green onion",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "can solid white tuna packed in water drained, mayonnaise, wasabi paste or to taste, minced fresh ginger root, minced green onion"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb73",
+        "title": "Suzanne&#8217;s Old Fashioned Pumpkin Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/pumpkinpie520a300x200c3401f8d.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/suzannes_old_fashioned_pumpkin_pie/",
+        "cooking_time": 90,
+        "ingredients": "2 cups of pumpkin pulp pure from a sugar pumpkin* or from canned pumpkin pure, 1.5 cups heavy cream or 1 12 oz. can of evaporated milk, 0.5 cup packed dark brown sugar, 0.33 cup white sugar, 0.5 tsp salt, 2  eggs plus the yolk of a third egg, 2 tsps of cinnamon, 1 tsp ground ginger, 0.25 tsp ground nutmeg, 0.25 tsp ground cloves, 0.25 tsp ground cardamon, 0.5 tsp of lemon zest, 1  good crust",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "of pumpkin pulp pure from a sugar pumpkin* or from canned pumpkin pure, heavy cream or . can of evaporated milk, packed dark brown sugar, white sugar, salt, eggs plus the yolk of a third egg, of cinnamon, ground ginger, ground nutmeg, ground cloves, ground cardamon, of lemon zest, good crust"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc9c9",
+        "title": "Sweet & sour ribs with pomegranate salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/2872684_MEDIUMa994.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2872684/sweet-and-sour-ribs-with-pomegranate-salsa",
+        "cooking_time": 90,
+        "ingredients": "2 g pork spare ribs, 1 l carton pomegranate juice, None  Flatbreads or rice to serve, 10 tbsps pomegranate molasses, 8 tbsps soft brown sugar, 8 tbsps tomato ketchup, 2 tbsps red wine vinegar, 1 tbsp worcestershire sauce, 1 tbsp grated ginger, 2 tsps ground cumin, 2 tsps coriander seeds, 1  red onion finely chopped, None  Seeds from 2 pomegranates or about 2 tubs pomegranate seeds, 1  red chilli finely chopped, None  Juice 2 limes, None  A small bunch coriander roughly chopped",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "pork spare ribs, carton pomegranate juice, None  Flatbreads or rice to serve, pomegranate molasses, soft brown sugar, tomato ketchup, red wine vinegar, worcestershire sauce, grated ginger, ground cumin, coriander seeds, red onion finely chopped, None  Seeds from pomegranates or about tubs pomegranate seeds, red chilli finely chopped, None  Juice imes, None  A small bunch coriander roughly chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcadf",
+        "title": "Sweet Chili Chicken Quesadilla",
+        "image_url": "http://forkify-api.herokuapp.com/images/Sweet2BChili2BChicken2BQuesadilla2B5002B459829a2ca63.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/05/sweet-chili-chicken-quesadilla.html",
+        "cooking_time": 75,
+        "ingredients": "1 tbsp oil, 1  small onion sliced, 1  tortilla, 0.25 cup jack shredded, 0.25 cup cheddar shredded, 0.25 cup warm cooked shredded chicken or orange chicken bulgogi, 2 tbsps salsa naranja or sweet chili sauce, 2 tsps toasted sesame seeds, 1 tbsp basil torn, 1 tbsp cilantro torn",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "oil, small onion sliced, tortilla, jack shredded, cheddar shredded, warm cooked shredded chicken or orange chicken bulgogi, salsa naranja or sweet chili sauce, toasted sesame seeds, basil torn, cilantro torn"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc1b",
+        "title": "Sweet Potato Breakfast Taquitos",
+        "image_url": "http://forkify-api.herokuapp.com/images/btaquitos300x2008083.jpg",
+        "publisher": "Naturally Ella",
+        "source_url": "http://naturallyella.com/2011/10/21/sweet-potato-breakfast-taquitos/",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp olive oil divided, 1  medium sweet potato, None  Medium onion, 1  jalapeno, 1 cup cilantro, None  Pinches salt and pepper, 1 cup shredded cheddar cheese, 2  eggs, 2 tbsps milk, 6  corn tortillas, None  Olive oil for brushing",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "olive oil divided, medium sweet potato, None  Medium onion, jalapeno, cilantro, None  Pinches salt and pepper, shredded cheddar cheese, eggs, milk, corn tortillas, None  Olive oil for brushing"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca34",
+        "title": "Sweet Potato Chili",
+        "image_url": "http://forkify-api.herokuapp.com/images/918284b158.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sweet-Potato-Chili/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "2  sweet potatoes diced, 2  cans diced stewed tomatoes with chili seasonings, 1  can tomato sauce, 0.75 cup diced sweet onion, 0.5 cup chopped celery, 0.5 cup water, 1 tbsp chili powder, 1 tsp ground cumin, 0.5 tsp ground cinnamon, 1  pinch salt, 1  pinch ground black pepper, 1  pinch cayenne pepper, 1  pinch garlic powder, 1  pinch onion powder, 0.5 pound ground turkey, 0.5 pound ground beef, 1  can black beans drained and rinsed, 1 cup corn",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "sweet potatoes diced, cans diced stewed tomatoes with chili seasonings, can tomato sauce, diced sweet onion, chopped celery, water, chili powder, ground cumin, ground cinnamon, pinch salt, pinch ground black pepper, pinch cayenne pepper, pinch garlic powder, pinch onion powder, pound ground turkey, pound ground beef, can black beans drained and rinsed, corn"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfb5",
+        "title": "Sweet Potato Crisps Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29591_sweet_potato_chips_6206d37.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29591-sweet-potato-crisps",
+        "cooking_time": 45,
+        "ingredients": "1  medium sweet potato scrubbed, 2 tsps olive oil, 0.5 tsp smoked paprika, 0.25 tsp kosher salt, None  For dipping",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "medium sweet potato scrubbed, olive oil, smoked paprika, kosher salt, None  For dipping"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcebb",
+        "title": "Sweet potato, chickpea & chorizo hash",
+        "image_url": "http://forkify-api.herokuapp.com/images/725646_MEDIUM950c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/725646/sweet-potato-chickpea-and-chorizo-hash",
+        "cooking_time": 45,
+        "ingredients": "600 g sweet potatoes diced, 1 tbsp sunflower oil, 1  large red onion thinly sliced, 400 g cooking chorizo sausages skinned and crumbled, 400 g can chickpeas rinsed and drained, 4  large eggs, 1  green chilli thinly sliced into rings",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "sweet potatoes diced, sunflower oil, large red onion thinly sliced, cooking chorizo sausages skinned and crumbled, can chickpeas rinsed and drained, large eggs, green chilli thinly sliced into rings"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce26",
+        "title": "Sweet Potato Kale Pizza with Rosemary & Red Onion",
+        "image_url": "http://forkify-api.herokuapp.com/images/sweetpotatokalepizza2c6db.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/sweet-potato-kale-pizza-with-rosemary-red-onion/",
+        "cooking_time": 60,
+        "ingredients": "None  Your favorite pizza dough-we used this, None  Pizza dough recipe, 1  large sweet potato thinly sliced about 1/4 inch thick, 1  red onion sliced, 1.5 tbsps olive oil divided, None  Salt and pepper for seasoning potato slices and onion, 1.5 cups mozzarella cheese, 1.5 cups chopped kale, 1 tbsp balsamic vinegar, 1 tsp freshly chopped rosemary",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "None  Your favorite pizza dough-we used this, None  Pizza dough recipe, large sweet potato thinly sliced about 1/inch thick, red onion sliced, olive oil divided, None  Salt and pepper for seasoning potato slices and onion, mozzarella cheese, chopped kale, balsamic vinegar, freshly chopped rosemary"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbd4",
+        "title": "Sweet Potato Pie With Candied Nut Cream",
+        "image_url": "http://forkify-api.herokuapp.com/images/sweetpotatopie_300ef8e969a.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/sweet-potato-pie-00100000068388/index.html",
+        "cooking_time": 75,
+        "ingredients": "1 pound sweet potatoes, 12  graham crackers, 5 tbsps unsalted butter melted, 2 tbsps granulated sugar, 0.5 tsp kosher salt, 1  14-oz can sweetened condensed milk, 2  large eggs, 0.5 tsp ground cinnamon, 0.25 tsp ground ginger, 0.25 tsp ground nutmeg, 1 cup pinch ground cloves, 0.5 cup heavy cream",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "pound sweet potatoes, graham crackers, unsalted butter melted, granulated sugar, kosher salt, 14-oz can sweetened condensed milk, large eggs, ground cinnamon, ground ginger, ground nutmeg, pinch ground cloves, heavy cream"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfd5",
+        "title": "Sweet Potato and Parmesan Chips",
+        "image_url": "http://forkify-api.herokuapp.com/images/SweetPotatoChips195f.jpg",
+        "publisher": "Whats Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/sweet-potato-and-parmesan-chips/",
+        "cooking_time": 60,
+        "ingredients": "1  large sweet potato, 0.25 cup shaved parmesan cheese, 1 tsp garlic salt, 1 tsp paprika, 0.5 tsp salt, 0.5 tsp pepper, 1 tbsp olive oil",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "large sweet potato, shaved parmesan cheese, garlic salt, paprika, salt, pepper, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca5f",
+        "title": "Sweet Potato and Quinoa Salad with Soft-Boiled Eggs",
+        "image_url": "http://forkify-api.herokuapp.com/images/IMG_2858200x3000c71.jpg",
+        "publisher": "Naturally Ella",
+        "source_url": "http://naturallyella.com/2013/01/18/sweet-potato-and-quinoa-salad-with-soft-boiled-eggs/",
+        "cooking_time": 75,
+        "ingredients": "1  medium sweet potato, None  Medium onion, 1 tbsp olive oil, 1 tbsp fresh rosemary minced, 1 cup uncooked quinoa, 1 cup water, 2  handfuls of lettuce, 1 cup gorgonzola, 1 cup sunflower seeds, 1 tbsp olive oil, 1 tbsp balsamic vinegar, 2  eggs",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "medium sweet potato, None  Medium onion, olive oil, fresh rosemary minced, uncooked quinoa, water, handfuls of lettuce, gorgonzola, sunflower seeds, olive oil, balsamic vinegar, eggs"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0a4",
+        "title": "Sweet Potato and Spinach Mac and Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/pasta200x300acfe.jpg",
+        "publisher": "Naturally Ella",
+        "source_url": "http://naturallyella.com/2012/11/09/sweet-potato-and-spinach-mac-and-cheese/",
+        "cooking_time": 75,
+        "ingredients": "1  medium sweet potato, 3 cups whole wheat pasta, 2 tbsps butter, 2 tbsps flour, 2  cloves garlic minced, 1 cup milk, 1 cup mozzarella cheese, 1 cup asiago cheese, 1 cup parmesan cheese, 2  handfuls spinach",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "medium sweet potato, whole wheat pasta, butter, flour, cloves garlic minced, milk, mozzarella cheese, asiago cheese, parmesan cheese, handfuls spinach"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca35",
+        "title": "Sweet Restaurant Slaw",
+        "image_url": "http://forkify-api.herokuapp.com/images/1788019c15.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Sweet-Restaurant-Slaw/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  bag coleslaw mix, 2 tbsps diced onion, 0.67 cup creamy salad dressing, 3 tbsps vegetable oil, 0.5 cup white sugar, 1 tbsp white vinegar, 0.25 tsp salt, 0.5 tsp poppy seeds",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "bag coleslaw mix, diced onion, creamy salad dressing, vegetable oil, white sugar, white vinegar, salt, poppy seeds"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb74",
+        "title": "Sweet and Sour Chicken",
+        "image_url": "http://forkify-api.herokuapp.com/images/jadensweetsourchickhoriz300x2009ff2dac7.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/sweet_and_sour_chicken/",
+        "cooking_time": 90,
+        "ingredients": "1 pound of boneless and skinless chicken thighs or breasts cut into 1\" chunks, 1  egg white, 0.5 tsp kosher salt, 2 tsps cornstarch, 1  10-oz can pineapple chunks, 0.25 cup juice from the canned pineapple, 0.25 cup white vinegar, 0.25 cup ketchup, 0.5 tsp kosher salt, 5 tbsps brown sugar, 1 tbsp + 1 tsp cooking oil, 1  red bell pepper cut into 1 inch chunks, 1  yellow bell pepper cut into 1 inch chunks, 1 tsp grated fresh ginger",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "pound of boneless and skinless chicken thighs or breasts cut into 1\" chunks, egg white, kosher salt, cornstarch, 10-oz can pineapple chunks, juice from the canned pineapple, white vinegar, ketchup, kosher salt, brown sugar, + cooking oil, red bell pepper cut into inch chunks, yellow bell pepper cut into inch chunks, grated fresh ginger"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca0d",
+        "title": "Sweet and sharp sea bass",
+        "image_url": "http://forkify-api.herokuapp.com/images/sweet_and_sharp_sea_bass_02350_16x9e886.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/sweet_and_sharp_sea_bass_02350",
+        "cooking_time": 45,
+        "ingredients": "3  passion fruit, 2  limes, 1  orange, 1  vanilla pod, 4  fillets sea bass, 1  red chilli, 1  yellow chilli, None  Small handful chives, None  Small handful coriander",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "passion fruit, limes, orange, vanilla pod, fillets sea bass, red chilli, yellow chilli, None  Small handful chives, None  Small handful coriander"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc87c",
+        "title": "Sweet chilli jam",
+        "image_url": "http://forkify-api.herokuapp.com/images/8257_MEDIUM3ebc.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/8257/sweet-chilli-jam",
+        "cooking_time": 60,
+        "ingredients": "8  red peppers deseeded and roughly chopped, 10  red chillies roughly chopped, None  Finger-sized piece fresh root ginger peeled and roughly chopped, 8  garlic cloves peeled, 400 g can cherry tomatoes, 750 g golden caster sugar, 250 ml red wine vinegar",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "red peppers deseeded and roughly chopped, red chillies roughly chopped, None  Finger-sized piece fresh root ginger peeled and roughly chopped, garlic cloves peeled, can cherry tomatoes, golden caster sugar, ml red wine vinegar"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd03d",
+        "title": "Sweet jacket potato with piri-piri prawns",
+        "image_url": "http://forkify-api.herokuapp.com/images/2852669_MEDIUMbd0e.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2852669/sweet-jacket-potato-with-piripiri-prawns",
+        "cooking_time": 60,
+        "ingredients": "1  large sweet potato, 2 tsps olive oil, 1  garlic clove crushed, 1  small red pointed pepper sliced into rings, None  Pinch of chilli flakes, 1 tsp sweet paprika, 1 tbsp red wine vinegar, 1 tbsp tomato ketchup, 100 g raw king prawns, None  Few sprigs parsley chopped, 2 tbsps light mayonnaise",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "large sweet potato, olive oil, garlic clove crushed, small red pointed pepper sliced into rings, None  Pinch of chilli flakes, sweet paprika, red wine vinegar, tomato ketchup, raw king prawns, None  Few sprigs parsley chopped, light mayonnaise"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc99e",
+        "title": "Sweet potato & chicken curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/313610_MEDIUM594c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/313610/sweet-potato-and-chicken-curry",
+        "cooking_time": 60,
+        "ingredients": "500 g sweet potatoes peeled and cut into bite-size pieces, 1 tbsp olive oil, 4  skinless chicken thigh fillets each cut into large chunks, 1  large red onion cut into wedges, 2 tbsps rogan josh curry paste, 2  large tomatoes roughly chopped, 125 g spinach",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "sweet potatoes peeled and cut into bite-size pieces, olive oil, skinless chicken thigh fillets each cut into large chunks, large red onion cut into wedges, rogan josh curry paste, large tomatoes roughly chopped, spinach"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd7e",
+        "title": "Sweet potato, spinach & lentil dahl",
+        "image_url": "http://forkify-api.herokuapp.com/images/96608_MEDIUM8f10.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/96608/sweet-potato-spinach-and-lentil-dahl",
+        "cooking_time": 60,
+        "ingredients": "100 g red lentils, 450 ml vegetable stock, 1  small onion grated or finely chopped, 2  tomatoes chopped, 1 tsp turmeric, 1 tsp garam masala, 1  red chilli finely chopped, 1  large sweet potato cut into small pieces, 2  handfuls young leaf spinach shredded, 2  naan bread warmed to serve",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "red lentils, ml vegetable stock, small onion grated or finely chopped, tomatoes chopped, turmeric, garam masala, red chilli finely chopped, large sweet potato cut into small pieces, handfuls young leaf spinach shredded, naan bread warmed to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf39",
+        "title": "Swiss Chard Lasagna with Ricotta and Mushroom",
+        "image_url": "http://forkify-api.herokuapp.com/images/3629543f0b.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Swiss-Chard-Lasagna-with-Ricotta-and-Mushroom-362954",
+        "cooking_time": 105,
+        "ingredients": "2.5 cups whole milk, 1  turkish bay leaf, 6 tbsps unsalted butter, 0.25 cup all purpose flour, 0.5 tsp coarse kosher salt, 0.5 tsp ground nutmeg, None  Pinch of ground cloves, 1 pound swiss chard center rib and stem cut from each leaf, 4 tbsps extra-virgin olive oil divided, 1.33 cups chopped onion, 4  large garlic cloves chopped divided, 0.25 tsp dried crushed red pepper, None  Coarse kosher salt, 1 pound crimini mushrooms sliced, 0.25 tsp ground nutmeg, 9  7 x 3-inch lasagna noodles, None  Extra-virgin olive oil, 1  15-oz container whole-milk ricotta cheese divided, 6 oz italian fontina cheese coarsely grated divided, 8 tbsps finely grated parmesan cheese divided, None  Test-kitchen tip: to test for doneness insert the blade of a small knife deep into the center of the lasagna for 30 seconds. remove the knife and feel the blade. if it's hot so is the lasagna.",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "whole milk, turkish bay leaf, unsalted butter, all purpose flour, coarse kosher salt, ground nutmeg, None  Pinch of ground cloves, pound swiss chard center rib and stem cut from each leaf, extra-virgin olive oil divided, chopped onion, large garlic cloves chopped divided, dried crushed red pepper, None  Coarse kosher salt, pound crimini mushrooms sliced, ground nutmeg, x 3-inch lasagna noodles, None  Extra-virgin olive oil, 15-oz container whole-milk ricotta cheese divided, italian fontina cheese coarsely grated divided, finely grated parmesan cheese divided, None  Test-kitchen tip: to test for doneness insert the blade of a small knife deep into the center of the lasagna for seconds. remove the knife and feel the blade. if it's hot so is the lasagna."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdbd",
+        "title": "Swiss Chard Lasagna with Ricotta and Mushrooms",
+        "image_url": "http://forkify-api.herokuapp.com/images/mare_swiss_chard_lasagna_with_ricotta_and_mushrooms_v82ff.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/01/swiss_chard_lasagna_with_ricotta_and_mushrooms",
+        "cooking_time": 105,
+        "ingredients": "2.5 cups whole milk, 1  turkish bay leaf, 6 tbsps unsalted butter, 0.25 cup all purpose flour, 0.5 tsp coarse kosher salt, 0.5 tsp ground nutmeg, None  Pinch of ground cloves, 1 pound swiss chard center rib and stem cut from each leaf, 4 tbsps extra-virgin olive oil divided, 1.33 cups chopped onion, 4  large garlic cloves chopped divided, 0.25 tsp dried crushed red pepper, None  Coarse kosher salt, None  Freshly ground pepper, 1 pound crimini mushrooms sliced, 0.25 tsp ground nutmeg, 9  7x3-inch lasagna noodles, None  Extra-virgin olive oil, 1  15-oz container whole-milk ricotta cheese divided, 6 oz italian fontina cheese coarsely grated divided, 8 tbsps finely grated parmesan cheese divided",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "whole milk, turkish bay leaf, unsalted butter, all purpose flour, coarse kosher salt, ground nutmeg, None  Pinch of ground cloves, pound swiss chard center rib and stem cut from each leaf, extra-virgin olive oil divided, chopped onion, large garlic cloves chopped divided, dried crushed red pepper, None  Coarse kosher salt, None  Freshly ground pepper, pound crimini mushrooms sliced, ground nutmeg, 7x3-inch lasagna noodles, None  Extra-virgin olive oil, 15-oz container whole-milk ricotta cheese divided, italian fontina cheese coarsely grated divided, finely grated parmesan cheese divided"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcce8",
+        "title": "Sylvia’s Perfect Pie Crust",
+        "image_url": "http://forkify-api.herokuapp.com/images/2129488793_8b0bde6c2d51d0.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2007/12/p-p-p-pie_crust_and_its_p-p-p-perfect/",
+        "cooking_time": 45,
+        "ingredients": "1.5 cups crisco, 3 cups all-purpose flour, 1  whole egg, 5 tbsps cold water, 1 tbsp white vinegar, 1 tsp salt",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "crisco, all-purpose flour, whole egg, cold water, white vinegar, salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca1a",
+        "title": "Taco Casserole",
+        "image_url": "http://forkify-api.herokuapp.com/images/205xNxIMG_9952d171.jpg.pagespeed.ic.czLaT9LOmD.jpg",
+        "publisher": "Healthy Delicious",
+        "source_url": "http://www.healthy-delicious.com/2010/05/taco-bake/",
+        "cooking_time": 60,
+        "ingredients": "2 oz tortilla chips plus additional for serving, 1  tbs chili oil, 1  onion chopped, 2  cloves garlic minced, 1 pound ground chicken, 2  tbs taco seasoning, 1  can black beans drained, 1 cup hot salsa, 1 cup shredded reduced fat cheddar cheese, None  Optional: other toppings such as jalepenios olives etc.",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "tortilla chips plus additional for serving, tbs chili oil, onion chopped, cloves garlic minced, pound ground chicken, tbs taco seasoning, can black beans drained, hot salsa, shredded reduced fat cheddar cheese, None  Optional: other toppings such as jalepenios olives etc."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae0",
+        "title": "Taco Dip",
+        "image_url": "http://forkify-api.herokuapp.com/images/Taco2BDip2B5002B43685d6b2c44.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/01/taco-dip.html",
+        "cooking_time": 75,
+        "ingredients": "0.5 pound ground beef, 0.5 tbsp taco seasoning, 2 tbsps water, 4 oz cream cheese room temperature, 0.5 cup sour cream, 0.25 cup mayonnaise, 1 cup salsa, 0.5 cup jack cheese shredded, 0.5 cup cheddar cheese shredded, 1 cup lettuce shredded, 1  tomato diced, 1  avocado diced, 2 tbsps sliced black olives, 1  handful cilantro",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "pound ground beef, taco seasoning, water, cream cheese room temperature, sour cream, mayonnaise, salsa, jack cheese shredded, cheddar cheese shredded, lettuce shredded, tomato diced, avocado diced, sliced black olives, handful cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca38",
+        "title": "Taco Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/144650a67b.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Taco-Pie/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "1  package refrigerated crescent rolls, 1 pound ground beef, 1  package taco seasoning mix, 1  container sour cream, 8 oz shredded mexican-style cheese blend, 1  bag tortilla chips crushed",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "package refrigerated crescent rolls, pound ground beef, package taco seasoning mix, container sour cream, shredded mexican-style cheese blend, bag tortilla chips crushed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae1",
+        "title": "Taco Quesadilla Pizzas",
+        "image_url": "http://forkify-api.herokuapp.com/images/Taco2BQuesadilla2BPizza2B5002B4417a4755e35.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/08/taco-quesadilla-pizza.html",
+        "cooking_time": 75,
+        "ingredients": "0.5 pound ground beef, 1 tbsp homemade taco seasoning or 1/2 store bought packet, 0.25 cup water, 4  tortillas, 2 cups cheese such as cheddar and/or jack shredded, 0.5 cup refried beans, 0.75 cup salsa, 1  tomato diced, 2 tbsps black olives sliced, 4  green onions sliced",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "pound ground beef, homemade taco seasoning or 1/store bought packet, water, tortillas, cheese such as cheddar and/or jack shredded, refried beans, salsa, tomato diced, black olives sliced, green onions sliced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae2",
+        "title": "Taco Stuffed Shells",
+        "image_url": "http://forkify-api.herokuapp.com/images/Taco2BStuffed2BShells2B5002B7249e76e46ea.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/02/taco-stuffed-shells.html",
+        "cooking_time": 90,
+        "ingredients": "1 tbsp oil, 1  onion diced, 2  cloves garlic, 1 pound ground beef, 3 tbsps taco seasoning, 1 cup tomato puree, 1 cup corn, 1 cup black beans, 4 oz goat cheese or cream cheese, None  Hot sauce to taste, None  Salt and pepper to taste, 1 cup salsa, 1 pound large pasta shells cooked, 1 tbsp butter melted, 0.5 cup panko bread crumbs, 1 cup cheese shredded",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "oil, onion diced, cloves garlic, pound ground beef, taco seasoning, tomato puree, corn, black beans, goat cheese or cream cheese, None  Hot sauce to taste, None  Salt and pepper to taste, salsa, pound large pasta shells cooked, butter melted, panko bread crumbs, cheese shredded"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd95",
+        "title": "Tandoori Turkey",
+        "image_url": "http://forkify-api.herokuapp.com/images/tandooriturkey6468459.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/11/tandoori-turkey",
+        "cooking_time": 195,
+        "ingredients": "2.5 tbsps coriander seeds, 2 tbsps cumin seeds, 1 tbsp plus 1 tsp whole black peppercorns, 1 tbsp ground cardamom, 2 tsps chili powder, 1 tsp dried fenugreek, 1 tsp whole cloves, 1  3&rdquo;&ndash;4&rdquo; cinnamon stick broken into pieces, 0.25 tsp ajwain seeds, 24  bay leaves crumbled, 3 tbsps black cardamom pods, 2.5 tbsps cumin seeds, 2 tbsps black peppercorns, 1.5 tbsps green cardamom pods, 1 tbsp coriander seeds, 2 tsps ajwain seeds, 2 tsps whole cloves, 1  3&rdquo;&ndash;4&rdquo cinnamon stick broken into pieces, 1  12&ndash;14-pound turkey, 0.25 cup kosher salt, 5  black cardamom pods, 5  green cardamom pods, 1 tbsp cumin seeds, 1  medium red onion chopped, 2  celery stalks chopped, 4  garlic cloves, 4 cups plain whole-milk yogurt, 0.5 cup chopped peeled ginger, 0.5 cup fresh lime juice, 0.25 cup finely chopped garlic, 0.25 cup paprika, 2 tbsps tandoori masala, 2 tbsps garam masala, 2 tsps chili powder, 1 tsp freshly ground black pepper",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "coriander seeds, cumin seeds, plus whole black peppercorns, ground cardamom, chili powder, dried fenugreek, whole cloves, 3&rdquo;&ndash;4&rdquo; cinnamon stick broken into pieces, ajwain seeds, bay leaves crumbled, black cardamom pods, cumin seeds, black peppercorns, green cardamom pods, coriander seeds, ajwain seeds, whole cloves, 3&rdquo;&ndash;4&rdquo cinnamon stick broken into pieces, 12&ndash;14-pound turkey, kosher salt, black cardamom pods, green cardamom pods, cumin seeds, medium red onion chopped, celery stalks chopped, garlic cloves, plain whole-milk yogurt, chopped peeled ginger, fresh lime juice, finely chopped garlic, paprika, tandoori masala, garam masala, chili powder, freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce6c",
+        "title": "Tapioca Pearl Pudding with Lychees and Mango",
+        "image_url": "http://forkify-api.herokuapp.com/images/epicuriousfacebook511b.png",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Tapioca-Pearl-Pudding-with-Lychees-and-Mango-351305",
+        "cooking_time": 60,
+        "ingredients": "6 cups water, 1 cup small pearl tapioca, 1  can lychees in syrup, 2 tbsps sugar, 2  strips lime zest, 1  piece peeled ginger thinly sliced, 1  large ripe mango peeled and cut into 1/2-inch pieces, 1 tsp fresh lime juice",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "water, small pearl tapioca, can lychees in syrup, sugar, strips lime zest, piece peeled ginger thinly sliced, large ripe mango peeled and cut into 1/2-inch pieces, fresh lime juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb76",
+        "title": "Tapioca Pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/tapiocapuddingb300x20096a0dcfa.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/tapioca_pudding/",
+        "cooking_time": 30,
+        "ingredients": "0.5 cup small pearl tapioca, 3 cups whole milk, 0.25 tsp salt, 2  eggs, 0.5 cup of sugar, 0.5 tsp of vanilla",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "small pearl tapioca, whole milk, salt, eggs, of sugar, of vanilla"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca3f",
+        "title": "Taqueria-Style Tacos (Carne Asada)",
+        "image_url": "http://forkify-api.herokuapp.com/images/157596897.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Taqueria-Style-Tacos---Carne-Asada/Detail.aspx",
+        "cooking_time": 165,
+        "ingredients": "3 pounds flank steak, 0.33 cup white vinegar, 0.5 cup soy sauce, 4  cloves garlic minced, 2  limes juiced, 0.5 cup olive oil, 1 tsp salt, 1 tsp ground black pepper, 1 tsp ground white pepper, 1 tsp garlic powder, 1 tsp chili powder, 1 tsp dried oregano, 1 tsp ground cumin, 1 tsp paprika, 1  white onion chopped, 0.5 cup chopped fresh cilantro, 1  lime juiced, 2  large tomatoes chopped, 2  jalapeno peppers chopped, 1  white onion quartered, 4  cloves garlic peeled, 4  dried new mexico chile pods, 1  pinch salt and pepper to taste, 1  package corn tortillas, 2 cups grated cotija cheese, 2  limes cut into wedges",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "flank steak, white vinegar, soy sauce, cloves garlic minced, limes juiced, olive oil, salt, ground black pepper, ground white pepper, garlic powder, chili powder, dried oregano, ground cumin, paprika, white onion chopped, chopped fresh cilantro, lime juiced, large tomatoes chopped, jalapeno peppers chopped, white onion quartered, cloves garlic peeled, dried new mexico chile pods, pinch salt and pepper to taste, package corn tortillas, grated cotija cheese, limes cut into wedges"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcedf",
+        "title": "Tequila-Lime Mahimahi Tacos",
+        "image_url": "http://forkify-api.herokuapp.com/images/511012001609.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Tequila-Lime-Mahimahi-Tacos-51101200",
+        "cooking_time": 90,
+        "ingredients": "4 tbsps fresh lime juice divided, 3 tbsps tequila, 3 tbsps roughly chopped fresh cilantro divided, 1 tsp finely chopped garlic, 1 tsp ground cumin, 1  lb mahimahi, 3 tbsps rice wine vinegar, 1 tsp canola oil, 2.75 tsps honey divided, 1.5 tsps kosher salt divided, 0.5 tsp freshly ground black pepper divided, 3 cups thinly sliced red cabbage, 0.75 cup reduced-fat sour cream, 3 tbsps 2 percent milk, 1.5 tsps finely grated lime zest, 8  corn tortillas, 1  firm-ripe avocado thinly sliced, 2  limes quartered",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "fresh lime juice divided, tequila, roughly chopped fresh cilantro divided, finely chopped garlic, ground cumin, lb mahimahi, rice wine vinegar, canola oil, honey divided, kosher salt divided, freshly ground black pepper divided, thinly sliced red cabbage, reduced-fat sour cream, percent milk, finely grated lime zest, corn tortillas, firm-ripe avocado thinly sliced, limes quartered"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca41",
+        "title": "Teri's Dinner in a Pumpkin",
+        "image_url": "http://forkify-api.herokuapp.com/images/49823431c5.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Teris-Dinner-In-A-Pumpkin/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1.5 pounds ground beef, 1 pound ground pork sausage, None  Salt and pepper to taste, 2 tbsps pumpkin pie spice, 2 tbsps brown sugar, 2  cans chicken stock, 1.5 cups long grain and wild rice mix, 1  sugar pumpkin, 1  can condensed cream of celery soup, 1  can condensed cream of mushroom soup, 2  cans mushroom stems and pieces drained, 2  cans french cut green beans",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "ground beef, pound ground pork sausage, None  Salt and pepper to taste, pumpkin pie spice, brown sugar, cans chicken stock, long grain and wild rice mix, sugar pumpkin, can condensed cream of celery soup, can condensed cream of mushroom soup, cans mushroom stems and pieces drained, cans french cut green beans"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0f8",
+        "title": "The Best Chocolate Sheet Cake. Ever.",
+        "image_url": "http://forkify-api.herokuapp.com/images/388604527_5e6812454fc6f7.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2007/06/the_best_chocol/",
+        "cooking_time": 90,
+        "ingredients": "None  For the cake:, 2 cups flour, 2 cups sugar, 0.25 tsp salt, 4 tbsps cocoa, 2  sticks butter, 1 cup boiling water, 0.5 cup buttermilk, 2  whole beaten eggs, 1 tsp baking soda, 1 tsp vanilla, None  For frosting:, 0.5 cup finely chopped pecans, 1  stick butter, 4 tbsps cocoa, 6 tbsps milk, 1 tsp vanilla, 1 pound powdered sugar",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "None  For the cake:, flour, sugar, salt, cocoa, sticks butter, boiling water, buttermilk, whole beaten eggs, baking soda, vanilla, None  For frosting:, finely chopped pecans, stick butter, cocoa, milk, vanilla, pound powdered sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca42",
+        "title": "Terrific Turkey Chili",
+        "image_url": "http://forkify-api.herokuapp.com/images/121406cb64.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Terrific-Turkey-Chili/Detail.aspx",
+        "cooking_time": 105,
+        "ingredients": "3 tbsps vegetable oil divided, 1.5 pounds ground turkey, 1  package taco seasoning mix, 1 tsp ground coriander, 1 tsp dried oregano, 1 tsp chili pepper flakes, 2 tbsps tomato paste, 1  can beef broth, 1  can salsa, 1  can crushed tomatoes or coarsely chopped tomatoes packed in puree, 1  can chopped green chile peppers, 1  medium onion finely chopped, 1  green bell pepper diced, 3  medium zucchini halved lengthwise and sliced, 1  bunch green onions chopped, 1 cup sour cream, 1 cup shredded cheddar cheese",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "vegetable oil divided, ground turkey, package taco seasoning mix, ground coriander, dried oregano, chili pepper flakes, tomato paste, can beef broth, can salsa, can crushed tomatoes or coarsely chopped tomatoes packed in puree, can chopped green chile peppers, medium onion finely chopped, green bell pepper diced, medium zucchini halved lengthwise and sliced, bunch green onions chopped, sour cream, shredded cheddar cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd5d",
+        "title": "Thai Chicken Curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/thaichickencurry646dd16.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2013/01/thai-chicken-curry",
+        "cooking_time": 45,
+        "ingredients": "2 tsps vegetable oil, 1  4-oz can or jar yellow curry paste, 0.75 pound carrots peeled cut into 1/2-inch-thick rounds, 1  medium onion chopped, 1  red bell pepper cut into 1-inch pieces, 1 pound yukon gold potatoes peeled cut into 1/2-inch pieces, 1 pound skinless boneless chicken thighs cut into 1-inch pieces, 1  13.5-oz or 15-ounce can unsweetened coconut milk, None  Chopped fresh basil and cilantro",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "vegetable oil, 4-oz can or jar yellow curry paste, pound carrots peeled cut into 1/2-inch-thick rounds, medium onion chopped, red bell pepper cut into 1-inch pieces, pound yukon gold potatoes peeled cut into 1/2-inch pieces, pound skinless boneless chicken thighs cut into 1-inch pieces, 13.5-oz or 15-ounce can unsweetened coconut milk, None  Chopped fresh basil and cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc95e",
+        "title": "Thai Chicken Curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/51140410724e.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Thai-Chicken-Curry-51140410",
+        "cooking_time": 45,
+        "ingredients": "2 tsps vegetable oil, 1  4-oz can or jar yellow curry paste, 0.75 pound carrots peeled cut into 1/2\"-thick rounds, 1  medium onion chopped, 1  red bell pepper cut into 1\" pieces, 1 pound yukon gold potatoes peeled cut into 1/2\" pieces, 1 pound skinless boneless chicken thighs cut into 1\" pieces, 1  13.5-oz or 15-ounce can unsweetened coconut milk, None  Chopped fresh basil and cilantro",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "vegetable oil, 4-oz can or jar yellow curry paste, pound carrots peeled cut into 1/2\"-thick rounds, medium onion chopped, red bell pepper cut into 1\" pieces, pound yukon gold potatoes peeled cut into 1/2\" pieces, pound skinless boneless chicken thighs cut into 1\" pieces, 13.5-oz or 15-ounce can unsweetened coconut milk, None  Chopped fresh basil and cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae5",
+        "title": "Thai Chicken Pizza with Sweet Chili Sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/Thai2BChicken2BPizza2Bwith2BSweet2BChili2BSauce2B5002B435581bcf578.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/02/thai-chicken-pizza-with-sweet-chili.html",
+        "cooking_time": 75,
+        "ingredients": "1  pizza dough, 0.5 cup sweet chili sauce, 1 cup cooked chicken cut bite sized pieces, 1  red bell pepper sliced, 1  carrot julienned, 1  handful bean sprouts, 2  green onions sliced, 1 cup mozzarella cheese shredded, 1  handful roasted peanuts chopped, 1  handful basil chopped, 1  handful cilantro chopped",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "pizza dough, sweet chili sauce, cooked chicken cut bite sized pieces, red bell pepper sliced, carrot julienned, handful bean sprouts, green onions sliced, mozzarella cheese shredded, handful roasted peanuts chopped, handful basil chopped, handful cilantro chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc32",
+        "title": "Thai Chicken Wraps",
+        "image_url": "http://forkify-api.herokuapp.com/images/wraps46e9.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2013/02/thai-chicken-wraps/",
+        "cooking_time": 180,
+        "ingredients": "2  whole boneless skinless chicken breasts, None  Option 1 marinade/sauce, 1 tbsp rice wine vinegar, 0.25 cup soy sauce, 1 tsp pure sesame oil, 1 tsp hot chili oil, None  Juice of 2 limes, 1 tbsp minced fresh ginger, 2 tbsps brown sugar, 1 tsp cornstarch, 2 tbsps honey, None  Peanut or canola oil for frying, None  Peanut sauce, 0.5 cup peanut butter, 3 tbsps soy sauce, 3 tbsps honey, 0.5 tsp hot chili oil, 1 tsp crushed red pepper, None  Juice of 2 limes, None  Water as needed for thinning, None  Wraps, 2  whole whole-wheat tortillas, None  Green leaf or other lettuce leaves left whole or shredded, 1  whole large carrot cut into thin strips or julienne, 1  whole cucumber seeds scraped out cut into strips, None  Cilantro leaves, None  Shelled peanuts, None  Optional additions:, None  Bean sprouts, None  Alfalfa sprouts, None  Baby spinach leaves, None  Thinly sliced red onion, None  Sliced green onion, None  Blanched asparagus, None  Salt and pepper to taste, None  Sriracha",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "whole boneless skinless chicken breasts, None  Option marinade/sauce, rice wine vinegar, soy sauce, pure sesame oil, hot chili oil, None  Juice of imes, minced fresh ginger, brown sugar, cornstarch, honey, None  Peanut or canola oil for frying, None  Peanut sauce, peanut butter, soy sauce, honey, hot chili oil, crushed red pepper, None  Juice of imes, None  Water as needed for thinning, None  Wraps, whole whole-wheat tortillas, None  Green leaf or other lettuce leaves left whole or shredded, whole large carrot cut into thin strips or julienne, whole cucumber seeds scraped out cut into strips, None  Cilantro leaves, None  Shelled peanuts, None  Optional additions:, None  Bean sprouts, None  Alfalfa sprouts, None  Baby spinach leaves, None  Thinly sliced red onion, None  Sliced green onion, None  Blanched asparagus, None  Salt and pepper to taste, None  Sriracha"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbd8",
+        "title": "Thai Curry Vegetable and Tofu Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/curry_veg_soup_30039b92bfa.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/thai-curry-vegetable-soup-00000000054580/index.html",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp thai red curry paste, 1 tsp grated fresh ginger, 2 cups low-sodium vegetable broth, 1  14-oz can coconut milk, 0.5 pound kosher salt, 4 oz shiitake mushrooms stems removed and caps thinly sliced, 2  green beans halved, 14 oz carrots halved lengthwise and sliced crosswise, 4 oz extra-firm tofu drained and cut into cubes, 2 tbsps snow peas, 0.25 cup fresh lime juice",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "thai red curry paste, grated fresh ginger, low-sodium vegetable broth, 14-oz can coconut milk, pound kosher salt, shiitake mushrooms stems removed and caps thinly sliced, green beans halved, carrots halved lengthwise and sliced crosswise, extra-firm tofu drained and cut into cubes, snow peas, fresh lime juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae6",
+        "title": "Thai Grilled Chicken Satay Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/Thai2BGrilled2BChicken2BSatay2BSalad2B12B800d1f4ee96.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/01/thai-grilled-chicken-satay-salad.html",
+        "cooking_time": 90,
+        "ingredients": "1  batch thai satay marinade, 1 pound chicken breasts, 4 cups salad greens, 2  avocados, 1  small cucumber, 4  green onions, 1  handful cilantro, 0.25 cup peanut sauce, 2 tbsps unsweetened coconut milk, 2 tbsps lime juice, 2 tbsps fish sauce, 2  birds eye chilies, 2 tsps sugar, 2 tbsps peanuts",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "batch thai satay marinade, pound chicken breasts, salad greens, avocados, small cucumber, green onions, handful cilantro, peanut sauce, unsweetened coconut milk, lime juice, fish sauce, birds eye chilies, sugar, peanuts"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0df",
+        "title": "Thai Red Curry with Kabocha Squash Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30268_Recipeimage_620x413_thai_curry_squash8dfe.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30268-thai-red-curry-with-kabocha-squash",
+        "cooking_time": 75,
+        "ingredients": "1 tbsp vegetable oil, 1  medium yellow onion medium dice, 1.5 tsps kosher salt plus more for seasoning, 2  medium green bell peppers seeds and ribs removed and cut into 1/4-inch strips, 4  medium garlic cloves finely chopped, 1 tbsp peeled and finely chopped fresh ginger, 3 tbsps thai red curry paste, 1  can unsweetened regular coconut milk, 0.5 cup water, 1 tbsp soy sauce, 1  medium kabocha squash peeled seeded and cut into 1-inch cubes, 2 tsps freshly squeezed lime juice, 0.25 cup coarsely chopped fresh cilantro",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "vegetable oil, medium yellow onion medium dice, kosher salt plus more for seasoning, medium green bell peppers seeds and ribs removed and cut into 1/4-inch strips, medium garlic cloves finely chopped, peeled and finely chopped fresh ginger, thai red curry paste, can unsweetened regular coconut milk, water, soy sauce, medium kabocha squash peeled seeded and cut into 1-inch cubes, freshly squeezed lime juice, coarsely chopped fresh cilantro"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd01c",
+        "title": "Thai chicken curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/1788_MEDIUMe870.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1788/thai-chicken-curry",
+        "cooking_time": 60,
+        "ingredients": "2  shallots or 1 small onion, 1  stalk lemongrass, 1 tbsp vegetable oil, 7 tsps red thai curry paste, 4  boneless and skinless chicken breasts cut into bite-size pieces, 1 tbsp fish sauce, 1 tsp sugar brown is best, 4  freeze-dried kaffir lime leaves, 400 ml can coconut milk, 20 g pack fresh coriander",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "shallots or small onion, stalk lemongrass, vegetable oil, red thai curry paste, boneless and skinless chicken breasts cut into bite-size pieces, fish sauce, sugar brown is best, freeze-dried kaffir lime leaves, ml can coconut milk, pack fresh coriander"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf57",
+        "title": "Thai fishcakes served with Thai cucumber salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/thaifishcakesservedw_73733_16x9ff91.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/thaifishcakesservedw_73733",
+        "cooking_time": 105,
+        "ingredients": "500 l 2oz fish fillets ( whitingpollockcoley, None  Red pepper, 2  red chillies chopped, 2 tbsps coriander, 3  spring onions, 2  cloves garlic, 1  stalk lemongrass, 1 tbsp fish sauce, 125 ml oz coconut milk, 1  whole egg, 125 oz green beans, None  Vegetable oil, 2  cucumbers, 35 oz caster sugar, 50 ml oz rice vinegar, 2  hot chillies finely diced, 2  shallots, 2 tbsps chopped coriander, 40 oz roasted peanuts, 1 tbsp nam pla ( fish sauce",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "2oz fish fillets ( whitingpollockcoley, None  Red pepper, red chillies chopped, coriander, spring onions, cloves garlic, stalk lemongrass, fish sauce, ml oz coconut milk, whole egg, green beans, None  Vegetable oil, cucumbers, caster sugar, ml oz rice vinegar, hot chillies finely diced, shallots, chopped coriander, roasted peanuts, nam pla ( fish sauce"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd038",
+        "title": "Thai prawn, ginger & spring onion stir-fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/468653_MEDIUMe0ac.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/468653/thai-prawn-ginger-and-spring-onion-stirfry",
+        "cooking_time": 90,
+        "ingredients": "200 g raw peeled tiger prawns from a sustainable source, 1  green thai chilli chopped, 3  garlic cloves 1 crushed and 2 finely sliced, 1  bunch coriander leaves and stalks separated, 1 tbsp caster sugar, None  Juice 1 lime, 3 tbsps fish sauce, 2 tbsps groundnut oil, 3  piece ginger finely sliced then shredded, 8  spring onions finely sliced, 1  red pepper thinly sliced, 85 g water chestnuts sliced, 100 g beansprouts, 1 tbsp soy sauce, None  Egg or rice noodles to serve, None  Lime wedges to serve",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "raw peeled tiger prawns from a sustainable source, green thai chilli chopped, garlic cloves crushed and finely sliced, bunch coriander leaves and stalks separated, caster sugar, None  Juice ime, fish sauce, groundnut oil, piece ginger finely sliced then shredded, spring onions finely sliced, red pepper thinly sliced, water chestnuts sliced, beansprouts, soy sauce, None  Egg or rice noodles to serve, None  Lime wedges to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca22",
+        "title": "Thai red curry",
+        "image_url": "http://forkify-api.herokuapp.com/images/3791_MEDIUMda38.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3791/thai-red-curry",
+        "cooking_time": 75,
+        "ingredients": "None  Oil, 7 tbsps red curry paste, 400 ml coconut milk plus 250ml milk, 2  large potatoes peeled and cubed, 300 g butternut squash cubed, 150 g green beans, 12  button mushrooms halved, 250 g cherry tomatoes, 4  boneless and skinless chicken thighs cut into cubes or 200g raw peeled prawns, None  Handful coriander, None  Fish sauce",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "None  Oil, red curry paste, ml coconut milk plus 250ml milk, large potatoes peeled and cubed, butternut squash cubed, green beans, button mushrooms halved, cherry tomatoes, boneless and skinless chicken thighs cut into cubes or 200g raw peeled prawns, None  Handful coriander, None  Fish sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd37",
+        "title": "Thai-spiced Pumpkin Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/pumpkinsouprecipe7dc3.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/001525.html",
+        "cooking_time": 30,
+        "ingredients": "2  acorn squash pumpkins or other smallish winter squash, 3 tbsps unsalted butter room temperature, 1  14-oz can coconut milk, 1 tsp red thai curry paste, None  Water, 2 tsps fine grain sea salt",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "acorn squash pumpkins or other smallish winter squash, unsalted butter room temperature, 14-oz can coconut milk, red thai curry paste, None  Water, fine grain sea salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfcd",
+        "title": "Thanksgiving Turkey Cake Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29029_turkey_cake_6207013.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29029-thanksgiving-turkey-cake",
+        "cooking_time": 105,
+        "ingredients": "None  Unsalted butter for coating the pans, 2 pounds ground turkey breast, 1 cup quick-cooking oats, 0.5 cup parmesan cheese grated on the small holes of a box grater, 0.33 cup ketchup, 0.33 cup finely chopped yellow onion, 0.25 cup finely chopped fresh italian parsley leaves, 0.25 cup worcestershire sauce, 2 tbsps soy sauce, 1.5 tsps minced fresh thyme leaves, 1 tsp minced fresh sage leaves, 0.5 tsp freshly ground black pepper, 2  medium garlic cloves minced, 1 pound sweet potatoes, 0.25 cup whole milk, 2 tbsps unsalted butter, 1 tbsp packed light brown sugar, 1 tsp kosher salt plus more as needed, None  Pinch ground mace or nutmeg, None  Freshly ground black pepper, 1.5 cups mini marshmallows",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "None  Unsalted butter for coating the pans, ground turkey breast, quick-cooking oats, parmesan cheese grated on the small holes of a box grater, ketchup, finely chopped yellow onion, finely chopped fresh italian parsley leaves, worcestershire sauce, soy sauce, minced fresh thyme leaves, minced fresh sage leaves, freshly ground black pepper, medium garlic cloves minced, pound sweet potatoes, whole milk, unsalted butter, packed light brown sugar, kosher salt plus more as needed, None  Pinch ground mace or nutmeg, None  Freshly ground black pepper, mini marshmallows"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca44",
+        "title": "The Best Banana Pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/16517d993.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/The-Best-Banana-Pudding/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  package instant vanilla pudding mix, 2 cups cold milk, 1  can sweetened condensed milk, 1 tbsp vanilla extract, 1  container frozen whipped topping thawed, 1  package vanilla wafers, 14  bananas sliced",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "package instant vanilla pudding mix, cold milk, can sweetened condensed milk, vanilla extract, container frozen whipped topping thawed, package vanilla wafers, bananas sliced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccb5",
+        "title": "The Best Coffee Cake. Ever.",
+        "image_url": "http://forkify-api.herokuapp.com/images/4706096854_ed734b479d_bbc66.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/06/the-best-coffee-cake-ever/",
+        "cooking_time": 75,
+        "ingredients": "None  For the cake:, 1  stick butter softened, 2 cups scant sugar, 3 cups flour sifted, 4 tsps baking powder, 1 tsp salt, 1.25 cups whole milk, 3  whole egg whites beaten until stiff, None  For the topping:, 1  stick butter softened, 0.75 cup flour, 1.5 cups brown sugar, 2 tbsps cinnamon, 1.5 cups pecans chopped",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "None  For the cake:, stick butter softened, scant sugar, flour sifted, baking powder, salt, whole milk, whole egg whites beaten until stiff, None  For the topping:, stick butter softened, flour, brown sugar, cinnamon, pecans chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf63",
+        "title": "The Best Lasagna Ever",
+        "image_url": "http://forkify-api.herokuapp.com/images/387114468_aafd1be3404a2f.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2007/06/the_best_lasagn/",
+        "cooking_time": 90,
+        "ingredients": "1.5 pounds ground beef, 1 pound hot breakfast sausage, 2  cloves garlic minced, 2  cans whole tomatoes, 2  cans tomato paste, 2 tbsps dried parsley, 2 tbsps dried basil, 1 tsp salt, 3 cups lowfat cottage cheese, 2  whole beaten eggs, 0.5 cup grated parmesan cheese, 2 tbsps dried parsley, 1 tsp salt, 1 pound sliced mozzarella cheese, 1  package lasagna noodles",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "ground beef, pound hot breakfast sausage, cloves garlic minced, cans whole tomatoes, cans tomato paste, dried parsley, dried basil, salt, lowfat cottage cheese, whole beaten eggs, grated parmesan cheese, dried parsley, salt, pound sliced mozzarella cheese, package lasagna noodles"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc4a",
+        "title": "The Best Spinach Artichoke Dip Ever",
+        "image_url": "http://forkify-api.herokuapp.com/images/spinachartichoke7160.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/06/the-best-spinach-artichoke-dip-ever/",
+        "cooking_time": 75,
+        "ingredients": "3 tbsps butter, 4 tbsps garlic minced, 1  bag spinach, None  Salt and pepper to taste, 2  cans artichoke hearts rinsed and drained, 3 tbsps butter, 3 tbsps flour, 1.5 cups whole milk, 1  package softened cream cheese, 0.5 cup crumbled feta, 0.5 cup grated parmesan, 0.75 cup grated pepper jack cheese, 0.25 tsp cayenne, None  Extra grated pepper jack, None  Pita wedges tortilla chips crackers",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "butter, garlic minced, bag spinach, None  Salt and pepper to taste, cans artichoke hearts rinsed and drained, butter, flour, whole milk, package softened cream cheese, crumbled feta, grated parmesan, grated pepper jack cheese, cayenne, None  Extra grated pepper jack, None  Pita wedges tortilla chips crackers"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca46",
+        "title": "The Best Vegetarian Chili in the World",
+        "image_url": "http://forkify-api.herokuapp.com/images/1765412971.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/The-Best-Vegetarian-Chili-In-The-World/Detail.aspx",
+        "cooking_time": 120,
+        "ingredients": "1 tbsp olive oil, 1  medium onion chopped, 2  bay leaves, 1 tsp ground cumin, 2 tbsps dried oregano, 1 tbsp salt, 2  stalks celery chopped, 2  green bell peppers chopped, 2  jalapeno peppers chopped, 3  cloves garlic chopped, 2  cans chopped green chile peppers drained, 2  packages vegetarian burger crumbles, 3  cans whole peeled tomatoes crushed, 0.25 cup chili powder, 1 tbsp ground black pepper, 1  can kidney beans drained, 1  can garbanzo beans drained, 1  can black beans, 1  can whole kernel corn",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "olive oil, medium onion chopped, bay leaves, ground cumin, dried oregano, salt, stalks celery chopped, green bell peppers chopped, jalapeno peppers chopped, cloves garlic chopped, cans chopped green chile peppers drained, packages vegetarian burger crumbles, cans whole peeled tomatoes crushed, chili powder, ground black pepper, can kidney beans drained, can garbanzo beans drained, can black beans, can whole kernel corn"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae8",
+        "title": "The Rachel Sandwich (aka Roast Turkey Reuben Sandwich)",
+        "image_url": "http://forkify-api.herokuapp.com/images/The2BRachel2BSandwich2B2528aka2BRoast2BTurkey2BReuben2BSandwich25292Bwith2BSlaw2B5002B88571f2c6619.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/01/rachel-sandwich-aka-roast-turkey-reuben.html",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp butter room temperature, 2  slices rye lightly toasted, 0.5 cup swiss cheese shredded and at room temperature, 1  slices roast turkey warm, 0.25 cup coleslaw or sauerkraut squeezed drained and coarsely chopped, 1 tbsp russian dressing or thousand islands dressing",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "butter room temperature, slices rye lightly toasted, swiss cheese shredded and at room temperature, slices roast turkey warm, coleslaw or sauerkraut squeezed drained and coarsely chopped, russian dressing or thousand islands dressing"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd084",
+        "title": "The best marinated chicken kebabs",
+        "image_url": "http://forkify-api.herokuapp.com/images/600_1_1350912746_lrg0513.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/chicken-recipes/the-best-marinated-chicken-kebabs",
+        "cooking_time": 75,
+        "ingredients": "500 g boneless higher-welfare chicken breasts, 4  courgettes sliced very thinly lengthways, 6  skewers or sticks of fresh rosemary lower leaves removed tips kept on, 1  handful fresh coriander, 1  handful fresh mint, 3  cloves garlic, 6  spring onions, 1  red chilli, None  Zest and juice of 1 lemon, None  Sea salt, None  Freshly ground black pepper, None  Olive oil",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "boneless higher-welfare chicken breasts, courgettes sliced very thinly lengthways, skewers or sticks of fresh rosemary lower leaves removed tips kept on, handful fresh coriander, handful fresh mint, cloves garlic, spring onions, red chilli, None  Zest and juice of emon, None  Sea salt, None  Freshly ground black pepper, None  Olive oil"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcffb",
+        "title": "The best marinated fish kebabs",
+        "image_url": "http://forkify-api.herokuapp.com/images/601_1_1350912791_lrg1f78.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/fish-recipes/the-best-marinated-fish-kebabs",
+        "cooking_time": 60,
+        "ingredients": "500 g monkfish tail from, None  Ask your fishmonger trimmed of all skin and bone and cut into 2.5cm cubes, 6  skewers or sticks fresh rosemary lower leaves removed tips kept on, 255 g new potatoes boiled halved, 2  thumb-sized pieces fresh ginger thinly sliced, None  Juice and zest of 1 lemon, 1 tsp turmeric, 2  cloves garlic, 2  dried chillies crumbled, 1  handful fresh mint, 4 tbsps natural yoghurt",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "monkfish tail from, None  Ask your fishmonger trimmed of all skin and bone and cut into 2.5cm cubes, skewers or sticks fresh rosemary lower leaves removed tips kept on, new potatoes boiled halved, thumb-sized pieces fresh ginger thinly sliced, None  Juice and zest of emon, turmeric, cloves garlic, dried chillies crumbled, handful fresh mint, natural yoghurt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb9b",
+        "title": "Tilapia Tacos With Cucumber Relish",
+        "image_url": "http://forkify-api.herokuapp.com/images/fishtacos_3006253eeea.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/fish-tacos-cucumber-relish-00000000057124/index.html",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp olive oil plus more for the grill, 4  6-oz tilapia fillets, 1 tsp ground coriander, 6  kosher salt and black pepper, 1  radishes sliced, 2 tbsps cucumber halved and sliced, 8  fresh lime juice plus lime wedges for serving, 1 cup corn tortillas warmed, 0.25 cup fresh cilantro leaves",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "olive oil plus more for the grill, 6-oz tilapia fillets, ground coriander, kosher salt and black pepper, radishes sliced, cucumber halved and sliced, fresh lime juice plus lime wedges for serving, corn tortillas warmed, fresh cilantro leaves"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce82",
+        "title": "The best roast turkey - Christmas or any time",
+        "image_url": "http://forkify-api.herokuapp.com/images/605_1_1350912906_lrga57a.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/turkey-recipes/the-best-roast-turkey-christmas-or-any-time",
+        "cooking_time": 105,
+        "ingredients": "1  sprig fresh sage leaves picked, 12  strips higher-welfare pancetta or thinly sliced streaky bacon, 1  bulb garlic broken into cloves, 4  medium red onions peeled, 2  sticks celery trimmed and chopped, 1  big handful breadcrumbs, 1  handful dried apricots, 300 g higher-welfare minced pork, None  Zest of 1 lemon, 1  pinch grated nutmeg, 1  large free-range egg, None  Sea salt, None  Freshly ground black pepper, 12  small sprigs of fresh rosemary plus a few extra, 8.5 kg higher-welfare turkey at room temperature, 2  carrots peeled, 1  large orange, None  Olive oil, 2 tbsps plain flour, 1  litres organic chicken or vegetable stock",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "sprig fresh sage leaves picked, strips higher-welfare pancetta or thinly sliced streaky bacon, bulb garlic broken into cloves, medium red onions peeled, sticks celery trimmed and chopped, big handful breadcrumbs, handful dried apricots, higher-welfare minced pork, None  Zest of emon, pinch grated nutmeg, large free-range egg, None  Sea salt, None  Freshly ground black pepper, small sprigs of fresh rosemary plus a few extra, higher-welfare turkey at room temperature, carrots peeled, large orange, None  Olive oil, plain flour, litres organic chicken or vegetable stock"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccef",
+        "title": "The king of casseroles: King Ranch Chicken",
+        "image_url": "http://forkify-api.herokuapp.com/images/kingranchDSC_7415eb00e50e.JPG",
+        "publisher": "Homesick Texan",
+        "source_url": "http://homesicktexan.blogspot.com/2007/10/king-of-casseroles-king-ranch-chicken.html",
+        "cooking_time": 120,
+        "ingredients": "1.5 pounds of chicken without skin and bones, 4 tsps of lime juice, 0.25 cup of olive oil, 3  cloves of garlic minced, 4 tbsps of butter, 1  an onion diced, 1  red bell pepper diced, 1  poblano pepper diced, 1  10oz. can of ro-tel tomatoes drained, 4 tsps ancho chile powder, 1 tsp of cumin, 1 cup of chicken broth, 2 tbsps of flour, 0.5 tsp of cayenne pepper, 0.5 cup of half and half, 0.33 cup of sour cream, 0.5 cup of cilantro chopped, 3 cups of grated pepper jack and cheddar, 10  corn tortillas, None  Salt and pepper to taste.",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "of chicken without skin and bones, of lime juice, of olive oil, cloves of garlic minced, of butter, an onion diced, red bell pepper diced, poblano pepper diced, 10oz. can of ro-tel tomatoes drained, ancho chile powder, of cumin, of chicken broth, of flour, of cayenne pepper, of half and half, of sour cream, of cilantro chopped, of grated pepper jack and cheddar, corn tortillas, None  Salt and pepper to taste."
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0b3",
+        "title": "The ultimate fruit salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/620_1_1350913347_lrgc027.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "https://www.jamieoliver.com/recipes/fruit-recipes/the-ultimate-fruit-salad",
+        "cooking_time": 30,
+        "ingredients": "100 g caster sugar, None  Teacup water, 1  bunch pineapple mint finely chopped optional, 1 kg mixed fruit such as melon pineapple green seedless grapes lychees granny smith apples strawberries blueberries or cherries",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "caster sugar, None  Teacup water, bunch pineapple mint finely chopped optional, mixed fruit such as melon pineapple green seedless grapes lychees granny smith apples strawberries blueberries or cherries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdc8",
+        "title": "The ultimate fruit salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/620_1_1350913347_lrgc027.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/fruit-recipes/the-ultimate-fruit-salad",
+        "cooking_time": 30,
+        "ingredients": "100 g caster sugar, None  Teacup water, 1  bunch pineapple mint finely chopped optional, 1 kg mixed fruit such as melon pineapple green seedless grapes lychees granny smith apples strawberries blueberries or cherries",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "caster sugar, None  Teacup water, bunch pineapple mint finely chopped optional, mixed fruit such as melon pineapple green seedless grapes lychees granny smith apples strawberries blueberries or cherries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf99",
+        "title": "The ultimate masala tea",
+        "image_url": "http://forkify-api.herokuapp.com/images/theultimatemasalatea_86647_16x92aa7.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/theultimatemasalatea_86647",
+        "cooking_time": 60,
+        "ingredients": "350 ml oz water, 100 ml oz milk, 4  black peppercorns, 10  green cardamom, None  Good pinch green fennel seeds, None  Small piece cinnamon, 1 tsp fresh ginger, 1  tea bag, None  To taste sugar, None  To taste salt",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "ml oz water, ml oz milk, black peppercorns, green cardamom, None  Good pinch green fennel seeds, None  Small piece cinnamon, fresh ginger, tea bag, None  To taste sugar, None  To taste salt"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0c1",
+        "title": "Thiebaud Pink Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/51159640eaf1.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Thiebaud-Pink-Cake-51159640",
+        "cooking_time": 30,
+        "ingredients": "0.5 pound fresh strawberries, 0.5 cup water, 0.25 cup sugar, 1  fresh raspberry",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "pound fresh strawberries, water, sugar, fresh raspberry"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc9af",
+        "title": "Three Meat Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/ThreeMeatLasagna8569.jpg",
+        "publisher": "Whats Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/three-meat-lasagna/",
+        "cooking_time": 135,
+        "ingredients": "1  package no-boil lasagna sheets, 1 cup mozzarella cheese shredded, 0.5 cup parmesan cheese shredded, None  Bechamel, 4 tbsps unsalted butter, 4 tbsps flour, 2.67 cups milk, None  Salt and freshly ground pepper to taste, None  Freshly grated nutmeg to taste, None  Ragu, 3 tbsps olive oil, 4 oz pancetta finely chopped, 1  onion chopped, 2  celery stalks chopped, 1  small carrot chopped, 4 oz ground veal, 4 oz ground pork, 8 oz ground beef, 0.67 cup red wine, 1.5 cups chicken stock, 2 cups milk, 32 oz canned plum tomatoes roughly crushed, None  Salt and freshly ground black pepper to taste, None  Instructionsin a large skillet melt the butter over medium high heat. once it's melted add the flour and whisk these two ingredients together to create a roux. as it turns golden brown slowly add in the milk and whisk. continue whisking until the bechamel is thick. season with salt pepper and a pinch of nutmeg. set aside.",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "package no-boil lasagna sheets, mozzarella cheese shredded, parmesan cheese shredded, None  Bechamel, unsalted butter, flour, milk, None  Salt and freshly ground pepper to taste, None  Freshly grated nutmeg to taste, None  Ragu, olive oil, pancetta finely chopped, onion chopped, celery stalks chopped, small carrot chopped, ground veal, ground pork, ground beef, red wine, chicken stock, milk, canned plum tomatoes roughly crushed, None  Salt and freshly ground black pepper to taste, None  Instructionsin a large skillet melt the butter over medium high heat. once it's melted add the flour and whisk these two ingredients together to create a roux. as it turns golden brown slowly add in the milk and whisk. continue whisking until the bechamel is thick. season with salt pepper and a pinch of nutmeg. set aside."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcea5",
+        "title": "Three bean, tomato & spinach stew",
+        "image_url": "http://forkify-api.herokuapp.com/images/5117_MEDIUM4128.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/5117/three-bean-tomato-and-spinach-stew",
+        "cooking_time": 60,
+        "ingredients": "1  large onion finely chopped, 1  garlic cloves crushed, None  Olive oil, 1 tbsp ground cumin, 400 g tin chopped tomatoes, 200 g tin kidney beans rinsed and drained, 200 g tin cannellini beans rinsed and drained, 100 g green beans chopped, 100 g spinach washed and roughly chopped",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "large onion finely chopped, garlic cloves crushed, None  Olive oil, ground cumin, tin chopped tomatoes, tin kidney beans rinsed and drained, tin cannellini beans rinsed and drained, green beans chopped, spinach washed and roughly chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca48",
+        "title": "Tiramisu Layer Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/988275fbb0.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Tiramisu-Layer-Cake/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "None  Cake:, 1  package moist white cake mix, 1 tsp instant coffee powder, 0.25 cup coffee, 1 tbsp coffee flavored liqueur, None  Filling:, 1  container mascarpone cheese, 0.5 cup confectioners' sugar, 2 tbsps coffee flavored liqueur, None  Frosting:, 2 cups heavy cream, 0.25 cup confectioners' sugar, 2 tbsps coffee flavored liqueur, None  Garnish:, 2 tbsps unsweetened cocoa powder, 1  square semisweet chocolate",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "None  Cake:, package moist white cake mix, instant coffee powder, coffee, coffee flavored liqueur, None  Filling:, container mascarpone cheese, confectioners' sugar, coffee flavored liqueur, None  Frosting:, heavy cream, confectioners' sugar, coffee flavored liqueur, None  Garnish:, unsweetened cocoa powder, square semisweet chocolate"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca49",
+        "title": "To Die For Blueberry Muffins",
+        "image_url": "http://forkify-api.herokuapp.com/images/6629086e7e.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/To-Die-For-Blueberry-Muffins/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1.5 cups all-purpose flour, 0.75 cup white sugar, 0.5 tsp salt, 2 tsps baking powder, 0.33 cup vegetable oil, 1  egg, 0.33 cup milk, 1 cup fresh blueberries, 0.5 cup white sugar, 0.33 cup all-purpose flour, 0.25 cup butter cubed, 1.5 tsps ground cinnamon",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "all-purpose flour, white sugar, salt, baking powder, vegetable oil, egg, milk, fresh blueberries, white sugar, all-purpose flour, butter cubed, ground cinnamon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb77",
+        "title": "Toasted Pumpkin Seeds",
+        "image_url": "http://forkify-api.herokuapp.com/images/roastedpumpkinseeds520300x2008929fa22.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/toasted_pumpkin_seeds/",
+        "cooking_time": 30,
+        "ingredients": "None  One medium sized pumpkin, None  Salt, None  Olive oil",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "None  One medium sized pumpkin, None  Salt, None  Olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce4b",
+        "title": "Toffee popcorn bark",
+        "image_url": "http://forkify-api.herokuapp.com/images/1755637_MEDIUM550a.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1755637/toffee-popcorn-bark",
+        "cooking_time": 30,
+        "ingredients": "200 g milk chocolate, 200 g white chocolate, 2  x 30g bags toffee popcorn",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "milk chocolate, white chocolate, x 30g bags toffee popcorn"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd3b",
+        "title": "Tofu Burgers",
+        "image_url": "http://forkify-api.herokuapp.com/images/tofu_burger_recipe7c06.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/tofu-burgers-recipe.html",
+        "cooking_time": 90,
+        "ingredients": "1 pound / 16 oz / 450 g extra-firm tofu drained and patted dry then sliced, 2  large eggs, 0.5 cup / 2 oz / 55 g fine dried bread crumbs, 0.5 cup / 2 oz / 55 g cashew nuts, 0.5 cup / 2 oz /55g sunflower seeds, 0.5 cup / 2 oz / 55g sliced mushrooms, 1 tbsp dijon mustard, 1 tbsp shoyu or soy sauce, 1 tsp ground cumin, 0.5 tsp ground cayenne, 0.25 tsp fine grain sea salt, 1 tbsp extra virgin olive oil, None  Extras: whatever buns & condiments you like. i did a combination of goat cheese and homemade pickles. you could also do a lettuce wrap in place of buns. and i couldn't resist the mini brioche buns from, None  La boulange",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "pound / / extra-firm tofu drained and patted dry then sliced, large eggs, / / fine dried bread crumbs, / / cashew nuts, / /55g sunflower seeds, / / 55g sliced mushrooms, dijon mustard, shoyu or soy sauce, ground cumin, ground cayenne, fine grain sea salt, extra virgin olive oil, None  Extras: whatever buns & condiments you like. i did a combination of goat cheese and homemade pickles. you could also do a lettuce wrap in place of buns. and i couldn't resist the mini brioche buns from, None  La boulange"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca4b",
+        "title": "Tofu Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/1069243530.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Tofu-Lasagna/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  package uncooked lasagna noodles, 1  package firm tofu crumbled, 2  eggs, 0.25 tsp salt, 0.25 tsp black pepper, 0.25 tsp ground nutmeg, 2 tbsps milk, 1 cup spaghetti sauce, 1 tbsp dried parsley, 2 cups shredded mozzarella cheese divided, 0.5 cup grated parmesan cheese",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "package uncooked lasagna noodles, package firm tofu crumbled, eggs, salt, black pepper, ground nutmeg, milk, spaghetti sauce, dried parsley, shredded mozzarella cheese divided, grated parmesan cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca4c",
+        "title": "Tofu Peanut Stir-Fry",
+        "image_url": "http://forkify-api.herokuapp.com/images/211788a414.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Tofu-Peanut-Stir-Fry/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1 tsp vegetable oil, 1  package frozen stir-fry vegetables, 0.5 tsp minced fresh ginger, None  Salt and pepper to taste, 2  eggs beaten, 1 cup cornstarch, None  Salt and pepper to taste, 1  package firm tofu drained and cubed, 0.5 cup vegetable oil, 0.75 cup peanut sauce, 0.25 cup chopped peanuts",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "vegetable oil, package frozen stir-fry vegetables, minced fresh ginger, None  Salt and pepper to taste, eggs beaten, cornstarch, None  Salt and pepper to taste, package firm tofu drained and cubed, vegetable oil, peanut sauce, chopped peanuts"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdfb",
+        "title": "Tofu Tostadas",
+        "image_url": "http://forkify-api.herokuapp.com/images/tofutostadas5dc74.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/tofu-tostadas/",
+        "cooking_time": 105,
+        "ingredients": "None  For the tostada shells:, 6  corn tortillas, None  Cooking spray, None  Salt, None  For the tofu:, 2 tbsps olive oil, 1  yellow onion diced, 2  garlic cloves minced, 1  medium red bell pepper seeds removed and diced, 12 oz firm tofu drained pat dry and cut into 1/2 inch cubes, 1 tsp chili powder, 0.5 tsp ground cumin, None  Salt and pepper to taste, None  Juice of 1 lime, 0.25 cup chopped fresh cilantro, None  Garnish:, None  Grape tomatoes cut in half, None  Avocado seed and skin removed diced, None  Fresh cilantro chopped, None  Lime juice",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "None  For the tostada shells:, corn tortillas, None  Cooking spray, None  Salt, None  For the tofu:, olive oil, yellow onion diced, garlic cloves minced, medium red bell pepper seeds removed and diced, firm tofu drained pat dry and cut into 1/inch cubes, chili powder, ground cumin, None  Salt and pepper to taste, None  Juice of ime, chopped fresh cilantro, None  Garnish:, None  Grape tomatoes cut in half, None  Avocado seed and skin removed diced, None  Fresh cilantro chopped, None  Lime juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd98",
+        "title": "Togarashi Popcorn",
+        "image_url": "http://forkify-api.herokuapp.com/images/Togarashi_Popcorn_6461b87.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/10/togarashi-popcorn",
+        "cooking_time": 30,
+        "ingredients": "0.25 cup unsalted butter, 3  garlic cloves minced, 0.33 cup popcorn kernels, 2 tbsps vegetable oil, 1 tsp toasted sesame oil, 1 tsp shichimi togarashi",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "unsalted butter, garlic cloves minced, popcorn kernels, vegetable oil, toasted sesame oil, shichimi togarashi"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc865",
+        "title": "Tomato and Green Bean Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/5682196643_d5a00b57b5abdf.jpg",
+        "publisher": "Delishhh",
+        "source_url": "http://delishhh.com/2011/05/02/tomato-and-green-bean-salad/",
+        "cooking_time": 30,
+        "ingredients": "10 oz green beans, 14 oz red and yellow cherry tomatoes, 2  green onions",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "green beans, red and yellow cherry tomatoes, green onions"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbbc",
+        "title": "Tomato and Ham Breakfast Casserole",
+        "image_url": "http://forkify-api.herokuapp.com/images/hamstrataictcrop_30075e8270d.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/tomato-ham-breakfast-casserole-00100000087343/index.html",
+        "cooking_time": 45,
+        "ingredients": "8  large eggs, 2 cups heavy cream, 8 oz kosher salt and black pepper, 1  sharp cheddar grated, 1 pound loaf country bread torn into 1-inch pieces, 2  pints sliced deli ham cut into 1/2-inch pieces, 2 tbsps cherry tomatoes",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "large eggs, heavy cream, kosher salt and black pepper, sharp cheddar grated, pound loaf country bread torn into 1-inch pieces, pints sliced deli ham cut into 1/2-inch pieces, cherry tomatoes"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd06e",
+        "title": "Tomato and Watermelon Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/352389b99f.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Tomato-and-Watermelon-Salad-352389",
+        "cooking_time": 60,
+        "ingredients": "3  or 4 small to medium heirloom tomatoes in assorted colors cored and cut into 3/4-inch chunks, 1  small english or regular cucumber peeled seeded and cut into 3/4-inch cubes, 1 cup 3/4-inch-cubed yellow or red seedless watermelon flesh, 1  hass avocado halved pitted peeled and cut into 3/4-inch cubes, 1 tbsp chopped mixed fresh herbs in any combination: basil tarragon chives and cilantro, 0.25 tsp coriander seed, 3 tbsps extra virgin olive oil, 3 tbsps aged balsamic vinegar, None  Kosher salt and freshly ground black pepper",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "or small to medium heirloom tomatoes in assorted colors cored and cut into 3/4-inch chunks, small english or regular cucumber peeled seeded and cut into 3/4-inch cubes, 3/4-inch-cubed yellow or red seedless watermelon flesh, hass avocado halved pitted peeled and cut into 3/4-inch cubes, chopped mixed fresh herbs in any combination: basil tarragon chives and cilantro, coriander seed, extra virgin olive oil, aged balsamic vinegar, None  Kosher salt and freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca4d",
+        "title": "Too Much Chocolate Cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/518798fb0d.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Too-Much-Chocolate-Cake/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1  package devil's food cake mix, 1  package instant chocolate pudding mix, 1 cup sour cream, 1 cup vegetable oil, 4  eggs, 0.5 cup warm water, 2 cups semisweet chocolate chips",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "package devil's food cake mix, package instant chocolate pudding mix, sour cream, vegetable oil, eggs, warm water, semisweet chocolate chips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce36",
+        "title": "Tortellini Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/tortellinisalad2811f.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/tortellini-salad/",
+        "cooking_time": 75,
+        "ingredients": "1  package cheese tortellini cooked according to package instructions rinsed and drained, 2 cups water-packed artichoke hearts drained and quartered, 1  large red pepper chopped seeds removed, 1  large yellow pepper chopped seeds removed, 0.5 cup pitted sliced black olives, 1.5 cups grape tomatoes, 0.75 cup shredded parmesan cheese, 0.5 cup freshly chopped basil, 1.25 cups balsamic dressing, None  Salt and pepper to taste",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "package cheese tortellini cooked according to package instructions rinsed and drained, water-packed artichoke hearts drained and quartered, large red pepper chopped seeds removed, large yellow pepper chopped seeds removed, pitted sliced black olives, grape tomatoes, shredded parmesan cheese, freshly chopped basil, balsamic dressing, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca50",
+        "title": "Tortellini Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/9423169daf.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Tortellini-Salad/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1  package refrigerated cheese tortellini, 4 oz sliced pepperoni quartered, 2  green onions sliced, 1  can sliced black olives, 1  jar marinated artichoke hearts drained and chopped, 6 oz mozzarella cheese diced, 0.33 cup extra-virgin olive oil, 1.5 tbsps balsamic vinegar, 1.5 tbsps distilled white vinegar, 1 tsp dried italian herb seasoning, None  Salt and black pepper to taste",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "package refrigerated cheese tortellini, sliced pepperoni quartered, green onions sliced, can sliced black olives, jar marinated artichoke hearts drained and chopped, mozzarella cheese diced, extra-virgin olive oil, balsamic vinegar, distilled white vinegar, dried italian herb seasoning, None  Salt and black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd1b",
+        "title": "Tortilla Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/tortilla_salad_recipeddda.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/tortilla-salad-recipe.html",
+        "cooking_time": 60,
+        "ingredients": "3 cups / ~1 lb / 16 oz cooked beans room temperature or warm, 0.33 cup / 1.5 oz / 45 g toasted sunflower seeds, 0.25 cup / 60ml, None  This dressing, None  Or to taste, 2 cups / big handfuls of chopped cauliflower boiled in a bit of salted water for just 20 seconds then drained under cold water, 2  big handfuls of tortilla chips, 0.25 cup / 1.5 oz / 45 g crumbled feta, 1  small radish sliced paper thin, 1  avocado sliced",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "/ ~/ cooked beans room temperature or warm, / / toasted sunflower seeds, / 60ml, None  This dressing, None  Or to taste, / big handfuls of chopped cauliflower boiled in a bit of salted water for just seconds then drained under cold water, big handfuls of tortilla chips, / / crumbled feta, small radish sliced paper thin, avocado sliced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcae9",
+        "title": "Triple Chocolate Pumpkin Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/Triple2BChocolate2BPumpkin2BPie2B5002B36377adf55ab.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2012/10/triple-chocolate-pumpkin-pie.html",
+        "cooking_time": 120,
+        "ingredients": "2 cups graham cracker crumbs, 6 tbsps unsalted butter melted, 1 tbsp granulated sugar, 2 tbsps packed light-brown sugar, 0.5 tsp coarse salt, 0.5 tsp ground cinnamon, 0.25 tsp ground ginger, 3 oz bittersweet chocolate finely chopped, 6 oz semisweet chocolate chopped, 4 tbsps unsalted butter cut into small pieces, 1  can solid-pack pumpkin, 1  can evaporated milk, 0.75 cup packed light-brown sugar, 3  large eggs, 1 tbsp cornstarch, 1 tsp pure vanilla extract, 1.5 tsps coarse salt, 0.75 tsp ground cinnamon, 0.75 tsp ground ginger, 0.25 tsp ground nutmeg, 0.13 tsp ground cloves, 1 oz milk chocolate melted, None  Whipped cream optional",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "graham cracker crumbs, unsalted butter melted, granulated sugar, packed light-brown sugar, coarse salt, ground cinnamon, ground ginger, bittersweet chocolate finely chopped, semisweet chocolate chopped, unsalted butter cut into small pieces, can solid-pack pumpkin, can evaporated milk, packed light-brown sugar, large eggs, cornstarch, pure vanilla extract, coarse salt, ground cinnamon, ground ginger, ground nutmeg, ground cloves, milk chocolate melted, None  Whipped cream optional"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfc0",
+        "title": "Triple-Melon Fruit Salad Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29667_melon_fruit_salad_6203803.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29667-triple-melon-fruit-salad",
+        "cooking_time": 60,
+        "ingredients": "3 pounds seedless watermelon cut into 1-inch cubes, 2 pounds cantaloupe cut into 1-inch cubes, 2 pounds honeydew melon cut into 1-inch cubes, 2 tbsps coarsely chopped fresh mint leaves, 1 tbsp freshly squeezed lime juice plus more as needed, 1 tbsp granulated sugar plus more as needed, None  Pinch kosher salt",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "seedless watermelon cut into 1-inch cubes, cantaloupe cut into 1-inch cubes, honeydew melon cut into 1-inch cubes, coarsely chopped fresh mint leaves, freshly squeezed lime juice plus more as needed, granulated sugar plus more as needed, None  Pinch kosher salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb79",
+        "title": "Turkey Soup with Lemon and Barley",
+        "image_url": "http://forkify-api.herokuapp.com/images/turkeysouplemonbarley520a300x20003493bfb.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/turkey_soup_with_lemon_and_barley/",
+        "cooking_time": 90,
+        "ingredients": "3 tbsps olive oil, 1  large onion grated or minced, 3  garlic cloves minced, None  Salt and black pepper, 1 tsp ground turmeric, 0.5 tsp ground cumin, 0.5 tsp ground ginger, None  Juice of a lemon, None  Strips of lemon zest from one lemon*, 6 cups turkey stock or chicken stock, 0.5 cup to 1 cup barley, 2 cups chopped leftover turkey, 0.25 cup chopped parsley, 0.25 cup chopped cilantro",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "olive oil, large onion grated or minced, garlic cloves minced, None  Salt and black pepper, ground turmeric, ground cumin, ground ginger, None  Juice of a lemon, None  Strips of lemon zest from one lemon*, turkey stock or chicken stock, to barley, chopped leftover turkey, chopped parsley, chopped cilantro"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bced1",
+        "title": "Tropical California Avocado Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/TropicalCucumberAvocadoSalad3e39.jpg",
+        "publisher": "What's Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/tropical-avocado-salad/",
+        "cooking_time": 105,
+        "ingredients": "3 cups arugula, 1  red onion sliced, 1  mango seeded and cut, 2  california avocados sliced, 1  jalapeno slivered, 1  english cucumber sliced on a bias, 2 tbsps fresh orange juice, 2 tbsps champagne vinegar, 0.33 cup olive oil, None  Salt and pepper to taste, 3 cups arugula, 1  red onion sliced, 1  mango seeded and cut, 2  california avocados sliced, 1  jalapeno slivered, 1  english cucumber sliced on a bias, 2 tbsps fresh orange juice, 2 tbsps champagne vinegar, 0.33 cup olive oil, None  Salt and pepper to taste",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "arugula, red onion sliced, mango seeded and cut, california avocados sliced, jalapeno slivered, english cucumber sliced on a bias, fresh orange juice, champagne vinegar, olive oil, None  Salt and pepper to taste, arugula, red onion sliced, mango seeded and cut, california avocados sliced, jalapeno slivered, english cucumber sliced on a bias, fresh orange juice, champagne vinegar, olive oil, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc997",
+        "title": "Tropical Fruit Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/51137010f1fa.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Tropical-Fruit-Salad-51137010",
+        "cooking_time": 30,
+        "ingredients": "1  large pineapple cored and chopped, 2  ripe mangoes chopped, 2  bananas sliced, 0.5 cup chopped canned lychees in syrup drained, 0.5 cup pomegranate seeds, 3 tbsps shredded sweetened dried coconut",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "large pineapple cored and chopped, ripe mangoes chopped, bananas sliced, chopped canned lychees in syrup drained, pomegranate seeds, shredded sweetened dried coconut"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf40",
+        "title": "Tropical Fruit Salad with Cacao Nibs Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/14112_tropical_fruit_salad_6002ca4.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/14112-tropical-fruit-salad-with-cacao-nibs",
+        "cooking_time": 60,
+        "ingredients": "1 cup banana peeled and cut into 1/2-inch slices, None  Peeled and cut into medium dice, 1 cup mango peeled and cut into medium dice, 1.5 cups solo, None  Peeled seeds removed and cut into medium dice, 0.25 cup hazelnuts toasted skins removed and coarsely chopped, 2 tbsps cacao nibs, 2 tbsps freshly squeezed lime juice, 1 tbsp agave nectar",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "banana peeled and cut into 1/2-inch slices, None  Peeled and cut into medium dice, mango peeled and cut into medium dice, solo, None  Peeled seeds removed and cut into medium dice, hazelnuts toasted skins removed and coarsely chopped, cacao nibs, freshly squeezed lime juice, agave nectar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca52",
+        "title": "Tropical Fruit Smoothie",
+        "image_url": "http://forkify-api.herokuapp.com/images/4252664472.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Tropical-Fruit-Smoothie/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  mango peeled and seeded, 1  papaya peeled and seeded, 0.5 cup fresh strawberries, 0.33 cup orange juice, 5  cubes ice",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "mango peeled and seeded, papaya peeled and seeded, fresh strawberries, orange juice, cubes ice"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0e9",
+        "title": "Tropical fruit salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/630_1_1350307437_lrg28cb.jpg",
+        "publisher": "Jamie Oliver",
+        "source_url": "http://www.jamieoliver.com/recipes/fruit-recipes/tropical-fruit-salad",
+        "cooking_time": 60,
+        "ingredients": "None  Pineapple, 1  ripe mango, 1  papaya, 2  kiwi fruit, None  Juice of lime, 1  small bunch fresh mint leaves picked, 2 tbsps golden caster sugar, 200 g yoghurt",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "None  Pineapple, ripe mango, papaya, kiwi fruit, None  Juice of lime, small bunch fresh mint leaves picked, golden caster sugar, yoghurt"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0aa",
+        "title": "Tropical fruits in lemongrass syrup",
+        "image_url": "http://forkify-api.herokuapp.com/images/1650_MEDIUMdb38.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1650/tropical-fruits-in-lemongrass-syrup",
+        "cooking_time": 30,
+        "ingredients": "425 g can lychees in syrup, 2  stems lemongrass halved and bashed with a rolling pin, 85 g golden caster sugar, 2  x 425g cans fresh mixed tropical fruits, 100 g seedless red grapes, 6  macaroons or coconut biscuits to serve",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "can lychees in syrup, stems lemongrass halved and bashed with a rolling pin, golden caster sugar, x 425g cans fresh mixed tropical fruits, seedless red grapes, macaroons or coconut biscuits to serve"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0cf",
+        "title": "Tuna pasta bake",
+        "image_url": "http://forkify-api.herokuapp.com/images/9649_MEDIUM7140.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/9649/tuna-pasta-bake",
+        "cooking_time": 60,
+        "ingredients": "600 g rigatoni, 50 g butter, 50 g plain flour, 600 ml milk, 250 g strong cheddar grated, 2  x 160g cans tuna steak in spring water drained, 330 g can sweetcorn drained, None  Large handful chopped parsley",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "rigatoni, butter, plain flour, ml milk, strong cheddar grated, x 160g cans tuna steak in spring water drained, can sweetcorn drained, None  Large handful chopped parsley"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd080",
+        "title": "Tunisian Lamb and Quince Stew Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/tunisian_lamb_quince_stew_2_60042a9.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/11148-tunisian-lamb-and-quince-stew",
+        "cooking_time": 105,
+        "ingredients": "2 tbsps coriander seeds, 1 tbsp caraway seeds, 6  medium garlic cloves peeled and smashed, 3  dried arbol chiles crumbled, 2 tsps paprika, 1 tsp cayenne pepper, 5 tbsps olive oil, 3 pounds lamb shoulder cut into 3-inch cubes, None  Kosher salt, None  Freshly ground black pepper, 2  medium yellow onions medium dice, 2 tbsps tomato paste, 1  cinnamon stick, 0.5 tsp crushed saffron, 5 cups low-sodium chicken broth, 2 pounds quince, 2 tbsps honey",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "coriander seeds, caraway seeds, medium garlic cloves peeled and smashed, dried arbol chiles crumbled, paprika, cayenne pepper, olive oil, lamb shoulder cut into 3-inch cubes, None  Kosher salt, None  Freshly ground black pepper, medium yellow onions medium dice, tomato paste, cinnamon stick, crushed saffron, low-sodium chicken broth, quince, honey"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc5e",
+        "title": "Turkey Bagel Burgers",
+        "image_url": "http://forkify-api.herokuapp.com/images/turkeybagelburgerb634.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/01/turkey-bagel-burger/",
+        "cooking_time": 75,
+        "ingredients": "8  whole everything bagels, 4 tbsps butter, 4 oz weight goat cheese or cream cheese, 2 tbsps pesto, 2 pounds ground turkey, 1 tsp kosher salt, None  Plenty of black pepper, 8  dashes worcestershire sauce, 4  dashes hot sauce, 1  whole egg yolk, 1 tbsp canola oil, 1 tbsp butter, 4  whole roma tomatoes sliced, 3  whole avocados sliced, 16  whole large basil leaves",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "whole everything bagels, butter, weight goat cheese or cream cheese, pesto, ground turkey, kosher salt, None  Plenty of black pepper, dashes worcestershire sauce, dashes hot sauce, whole egg yolk, canola oil, butter, whole roma tomatoes sliced, whole avocados sliced, whole large basil leaves"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcff2",
+        "title": "Turkey Roll-Ups with Blueberry Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/epicuriousfacebook511b.png",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Turkey-Roll-Ups-with-Blueberry-Salsa-354770",
+        "cooking_time": 75,
+        "ingredients": "0.5 cup reduced-fat mayonnaise, 2 tsps curry powder, 1 pint blueberries, 1  jalapeo pepper seeded and chopped, 1  kiwifruit peeled and diced, None  Juice of 1 lime, 1  red onion finely chopped, 0.5 tsp salt, 8  butter lettuce leaves, 4  slices deli turkey",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "reduced-fat mayonnaise, curry powder, blueberries, jalapeo pepper seeded and chopped, kiwifruit peeled and diced, None  Juice of ime, red onion finely chopped, salt, butter lettuce leaves, slices deli turkey"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf76",
+        "title": "Ultimate roast potatoes",
+        "image_url": "http://forkify-api.herokuapp.com/images/1303_MEDIUM073c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1303/ultimate-roast-potatoes",
+        "cooking_time": 30,
+        "ingredients": "1 g maris piper potato, 100 g duck or goose fat fat or 100ml/3fl oz olive oil, 2 tsps flour, None  Maldon salt to serve",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "maris piper potato, duck or goose fat fat or 100ml/3fl oz olive oil, flour, None  Maldon salt to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca55",
+        "title": "Turkey Stir Fry with Lychees",
+        "image_url": "http://forkify-api.herokuapp.com/images/777930f88d.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Turkey-Stir-Fry-With-Lychees/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1 pound turkey meat diced, 2 tbsps oyster sauce divided, 1  piece fresh ginger root finely chopped divided, 2 tbsps chinese cooking wine divided, 1 tbsp vegetable oil, 1 tbsp minced garlic, 1  can lychees drained, 2  red chile peppers seeded and sliced into strips, 1 tbsp soy sauce or to taste, 1  dash ground black pepper, 1  bunch fresh cilantro chopped, 1  bunch green onions chopped",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "pound turkey meat diced, oyster sauce divided, piece fresh ginger root finely chopped divided, chinese cooking wine divided, vegetable oil, minced garlic, can lychees drained, red chile peppers seeded and sliced into strips, soy sauce or to taste, dash ground black pepper, bunch fresh cilantro chopped, bunch green onions chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc87a",
+        "title": "Turkey burgers with beetroot relish",
+        "image_url": "http://forkify-api.herokuapp.com/images/10767_MEDIUM940c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/10767/turkey-burgers-with-beetroot-relish",
+        "cooking_time": 75,
+        "ingredients": "500 g pack turkey mince, 1 tsp dried thyme or 2 tsp fresh, 1  lemon, 250 g cooked peeled beetroot finely diced, 1  small red onion finely chopped, 2 tbsps chopped parsley, 2 tsps olive oil, 2 tsps wholegrain mustard, None  Little gem lettuce to serve, None  Wholemeal pitta bread to serve",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "pack turkey mince, dried thyme or fresh, lemon, cooked peeled beetroot finely diced, small red onion finely chopped, chopped parsley, olive oil, wholegrain mustard, None  Little gem lettuce to serve, None  Wholemeal pitta bread to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce70",
+        "title": "Turkish-Spiced Chicken Kebabs with Pomegranate Relish and Tahini Yogurt",
+        "image_url": "http://forkify-api.herokuapp.com/images/36293543ca.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Turkish-Spiced-Chicken-Kebabs-with-Pomegranate-Relish-and-Tahini-Yogurt-362935",
+        "cooking_time": 105,
+        "ingredients": "3.5 tbsps fresh lemon juice, 1  large garlic clove pressed, 0.5 cup plain whole-milk greek-style yogurt, 0.25 cup tahini, 1.25 cups pomegranate seeds, 0.67 cup shelled unsalted natural pistachios coarsely chopped, 0.33 cup coarsely chopped fresh italian parsley, 2.5 tbsps olive oil, 2.5 tsps fresh lemon juice, 0.5 cup coarsely grated onion, 2 tbsps fresh lemon juice, 2 tbsps olive oil, 4  skinless boneless chicken breast halves each halved lengthwise then cut crosswise into 3 pieces, None  Warm pita breads, None  Special equipment: 4 10- to 12-inch-long metal skewers, None  Ingredient info: greek-style yogurt is sold at some supermarkets and at specialty foods stores and greek markets. tahini is available at some supermarkets and at natural foods stores and middle eastern markets.",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "fresh lemon juice, large garlic clove pressed, plain whole-milk greek-style yogurt, tahini, pomegranate seeds, shelled unsalted natural pistachios coarsely chopped, coarsely chopped fresh italian parsley, olive oil, fresh lemon juice, coarsely grated onion, fresh lemon juice, olive oil, skinless boneless chicken breast halves each halved lengthwise then cut crosswise into pieces, None  Warm pita breads, None  Special equipment: 10- to 12-inch-long metal skewers, None  Ingredient info: greek-style yogurt is sold at some supermarkets and at specialty foods stores and greek markets. tahini is available at some supermarkets and at natural foods stores and middle eastern markets."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca0f",
+        "title": "Tuscan Kale Chips",
+        "image_url": "http://forkify-api.herokuapp.com/images/351240dedc.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Tuscan-Kale-Chips-351240",
+        "cooking_time": 15,
+        "ingredients": "12  large tuscan kale leaves rinsed dried cut lengthwise in half center ribs and stems removed, 1 tbsp olive oil",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "large tuscan kale leaves rinsed dried cut lengthwise in half center ribs and stems removed, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbf7",
+        "title": "Tutti frutti Christmas pies",
+        "image_url": "http://forkify-api.herokuapp.com/images/2807669_MEDIUMf576.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2807669/tutti-frutti-christmas-pies",
+        "cooking_time": 90,
+        "ingredients": "50 g ready-to-eat dried apricots finely chopped, 25 g pecans finely chopped, 30 g pitted dried dates finely chopped, 50 g sweetened dried cranberries roughly chopped, 2  medium granny smiths peeled cored and very finely chopped or grated, 50 g light brown sugar, 1 tsp ground cinnamon, 25 g butter melted and cooled, 2 tbsps cherry brandy or orange juice, 250 g plain flour, 40 g icing sugar, 125 g butter, 150 g white marzipan, None  Icing sugar or caster sugar for spinkling",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "ready-to-eat dried apricots finely chopped, pecans finely chopped, pitted dried dates finely chopped, sweetened dried cranberries roughly chopped, medium granny smiths peeled cored and very finely chopped or grated, light brown sugar, ground cinnamon, butter melted and cooled, cherry brandy or orange juice, plain flour, icing sugar, butter, white marzipan, None  Icing sugar or caster sugar for spinkling"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd8b",
+        "title": "Twice-Baked Sweet Potatoes with Bacon-Sesame Brittle",
+        "image_url": "http://forkify-api.herokuapp.com/images/twicebakessweetpotatoeswithbaconsesamebrittle646944e.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/03/twice-baked-sweet-potatoes-with-bacon-sesame-brittle",
+        "cooking_time": 60,
+        "ingredients": "4  slices bacon cut into 1/2-inch-wide pieces, 0.33 cup sugar, 1 tbsp sesame seeds, 6  medium sweet potatoes, 2  large eggs, 3 tbsps unsalted butter room temperature, 2 tbsps white miso, 1  2/3-inch piece ginger peeled finely grated, 2  1-inch pieces scallion thinly sliced lengthwise",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "slices bacon cut into 1/2-inch-wide pieces, sugar, sesame seeds, medium sweet potatoes, large eggs, unsalted butter room temperature, white miso, 2/3-inch piece ginger peeled finely grated, 1-inch pieces scallion thinly sliced lengthwise"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce27",
+        "title": "Twix Caramel Popcorn",
+        "image_url": "http://forkify-api.herokuapp.com/images/twixcaramelpopcorn2ddb1.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/twix-caramel-popcorn/",
+        "cooking_time": 45,
+        "ingredients": "5  quarts plain air popped popcorn, 1 cup butter, 2 cups light brown sugar, 0.5 cup light corn syrup, 1 tsp salt, 0.5 tsp baking soda, 1 tsp vanilla extract, 20  \"fun size\" twix candy bars chopped, 2 cups semi-sweet chocolate chips melted-to drizzle over popcorn",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "quarts plain air popped popcorn, butter, light brown sugar, light corn syrup, salt, baking soda, vanilla extract, \"fun size\" twix candy bars chopped, semi-sweet chocolate chips melted-to drizzle over popcorn"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce31",
+        "title": "Two-Ingredient Banana Peanut Butter Ice Cream",
+        "image_url": "http://forkify-api.herokuapp.com/images/bananapeanutbuttericecream5c16d.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/two-ingredient-banana-peanut-butter-ice-cream/",
+        "cooking_time": 15,
+        "ingredients": "4  large very ripe bananas, 2 tbsps peanut butter",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "large very ripe bananas, peanut butter"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0ae",
+        "title": "Ultimate chocolate cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/3092_MEDIUMf610.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3092/ultimate-chocolate-cake",
+        "cooking_time": 90,
+        "ingredients": "200 g good quality dark chocolate about 60% cocoa solids, 200 g butter, 1 tbsp instant coffee granules, 85 g self-raising flour, 85 g plain flour, 14 tsps bicarbonate of soda, 200 g light muscovado sugar, 200 g golden caster sugar, 25 g cocoa powder, 3  medium eggs, 75 ml buttermilk, None  Grated chocolate or curls to decorate, 200 g good quality dark chocolate as above, 284 ml carton double cream, 2 tbsps golden caster sugar",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "good quality dark chocolate about 60% cocoa solids, butter, instant coffee granules, self-raising flour, plain flour, bicarbonate of soda, light muscovado sugar, golden caster sugar, cocoa powder, medium eggs, ml buttermilk, None  Grated chocolate or curls to decorate, good quality dark chocolate as above, ml carton double cream, golden caster sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca57",
+        "title": "Valentine Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/7988559586.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Valentine-Pizza/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "3 cups bread flour, 1  envelope active dry yeast, 1.25 cups warm water, 3 tbsps extra virgin olive oil divided, 3 tbsps chopped fresh rosemary, 1  can pizza sauce, 3 cups shredded mozzarella cheese, 2  ripe tomatoes sliced, 1  zucchini sliced, 15  slices vegetarian pepperoni, 1  can sliced black olives",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "bread flour, envelope active dry yeast, warm water, extra virgin olive oil divided, chopped fresh rosemary, can pizza sauce, shredded mozzarella cheese, ripe tomatoes sliced, zucchini sliced, slices vegetarian pepperoni, can sliced black olives"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbfe",
+        "title": "Vanilla Fig Bars",
+        "image_url": "http://forkify-api.herokuapp.com/images/VanillaFigBars577368b5.jpg",
+        "publisher": "Elana's Pantry",
+        "source_url": "http://www.elanaspantry.com/vanilla-fig-bars/",
+        "cooking_time": 30,
+        "ingredients": "2 cups blanched slivered almonds, 1 cup unsweetened shredded coconut, 1 tsp celtic sea salt, 15  drops vanilla crme stevia, 1 cup dried figs soaked in cup water for 12 hours",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "blanched slivered almonds, unsweetened shredded coconut, celtic sea salt, drops vanilla crme stevia, dried figs soaked in cup water for hours"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc82",
+        "title": "Vanilla Ice Cream with Peach-Basil Topping",
+        "image_url": "http://forkify-api.herokuapp.com/images/peachbasilb2e2.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/07/vanilla-ice-cream-with-basil-peach-topping/",
+        "cooking_time": 30,
+        "ingredients": "2  whole peaches pitted and chopped, 2 cups sugar, 2 cups water, 18  whole basil leaves washed, None  Vanilla or strawberry ice cream",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "whole peaches pitted and chopped, sugar, water, whole basil leaves washed, None  Vanilla or strawberry ice cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce38",
+        "title": "Vanilla Pudding Chocolate Chip Cookies",
+        "image_url": "http://forkify-api.herokuapp.com/images/puddingcookiesfac1.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/vanilla-pudding-chocolate-chip-cookies/",
+        "cooking_time": 75,
+        "ingredients": "1 cup unsalted butter at room temperature, 0.75 cup brown sugar, 0.25 cup granulated sugar, 3  oz. package vanilla instant pudding mix, 2  large eggs, 1 tsp vanilla extract, 2.25 cups all-purpose flour, 1 tsp baking soda, 0.5 tsp salt, 2 cups semi-sweet chocolate chips",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "unsalted butter at room temperature, brown sugar, granulated sugar, oz. package vanilla instant pudding mix, large eggs, vanilla extract, all-purpose flour, baking soda, salt, semi-sweet chocolate chips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc9c3",
+        "title": "Vanilla peaches",
+        "image_url": "http://forkify-api.herokuapp.com/images/3740_MEDIUM5ffc.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3740/vanilla-peaches",
+        "cooking_time": 45,
+        "ingredients": "None  Vanilla pod, 2 tbsps light muscovado sugar, 1 tsp ground cinnamon, 1  lemon juiced, 6  peaches halved or quartered and stoned, 4  passion fruits, None  Crme frache or cream to serve",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "None  Vanilla pod, light muscovado sugar, ground cinnamon, lemon juiced, peaches halved or quartered and stoned, passion fruits, None  Crme frache or cream to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca58",
+        "title": "Vegan Arepas Made with Polenta",
+        "image_url": "http://forkify-api.herokuapp.com/images/653062ffb6.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Vegan-Arepas-Made-With-Polenta/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "1  container tofu drained, 1  tube prepared polenta, None  Olive oil, 2  bananas sliced lengthwise, 1 cup black beans undrained, 2  avocados - peeled pitted and sliced, 1  large mango - peeled seeded and diced, 0.25 cup diced onion, 1  jalapeno pepper seeded and minced, None  Salt to taste",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "container tofu drained, tube prepared polenta, None  Olive oil, bananas sliced lengthwise, black beans undrained, avocados - peeled pitted and sliced, large mango - peeled seeded and diced, diced onion, jalapeno pepper seeded and minced, None  Salt to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf66",
+        "title": "Vegan Chocolate Avocado Cookies",
+        "image_url": "http://forkify-api.herokuapp.com/images/VeganChocolateAvocadoCookies58524.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/vegan-chocolate-avocado-cookies/",
+        "cooking_time": 60,
+        "ingredients": "1.25 cups all-purpose gold medal flour, 1 tsp baking powder, 0.5 tsp sea salt, 0.67 cup dutch processed cocoa, 0.25 cup coconut oil, 0.25 cup mashed avocado, 0.25 cup granulated sugar, 0.5 cup brown sugar, 1 tsp vanilla extract, 0.33 cup almond milk, 0.5 cup vegan chocolate chips",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "all-purpose gold medal flour, baking powder, sea salt, dutch processed cocoa, coconut oil, mashed avocado, granulated sugar, brown sugar, vanilla extract, almond milk, vegan chocolate chips"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbf8",
+        "title": "Vegan Coconut Raspberry Ice Cream",
+        "image_url": "http://forkify-api.herokuapp.com/images/VeganCoconutRaspberryIceCreamRecipe1b3e8.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/vegan-coconut-raspberry-ice-cream/",
+        "cooking_time": 45,
+        "ingredients": "2  cans chilled thai coconut milk, 0.75 cup granulated sugar, 1 tsp vanilla extract, 1 cup raspberries",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "cans chilled thai coconut milk, granulated sugar, vanilla extract, raspberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca59",
+        "title": "Vegan Fajitas",
+        "image_url": "http://forkify-api.herokuapp.com/images/453745e88d.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Vegan-Fajitas/Detail.aspx",
+        "cooking_time": 105,
+        "ingredients": "0.25 cup olive oil, 0.25 cup red wine vinegar, 1 tsp dried oregano, 1 tsp chili powder, None  Garlic salt to taste, None  Salt and pepper to taste, 1 tsp white sugar, 2  small zucchini julienned, 2  medium small yellow squash julienned, 1  large onion sliced, 1  green bell pepper cut into thin strips, 1  red bell pepper cut into thin strips, 2 tbsps olive oil, 1  can whole kernel corn drained, 1  can black beans drained",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "olive oil, red wine vinegar, dried oregano, chili powder, None  Garlic salt to taste, None  Salt and pepper to taste, white sugar, small zucchini julienned, medium small yellow squash julienned, large onion sliced, green bell pepper cut into thin strips, red bell pepper cut into thin strips, olive oil, can whole kernel corn drained, can black beans drained"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0dc",
+        "title": "Vegan Lasagna Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/29439_vegan_lasagna_2_620c9bf.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/29439-vegan-lasagna",
+        "cooking_time": 135,
+        "ingredients": "1.5 pounds eggplant, 2 tsps kosher salt plus more as needed, 4 tbsps extra-virgin olive oil, None  Freshly ground black pepper, 1 tsp finely chopped fresh italian parsley leaves, 0.5 tsp red wine vinegar, None  Pinch red pepper flakes, 2  cans whole peeled tomatoes preferably san marzano, 0.25 cup extra-virgin olive oil, 1  medium yellow onion finely chopped, 2  medium garlic cloves minced, 1 tbsp tomato paste, 1  bay leaf, 0.25 tsp red pepper flakes plus more as needed, None  Kosher salt, 2 tbsps capers, None  Kosher salt, 12 oz dried lasagna noodles, 2 pounds soft tofu drained, 0.33 cup finely chopped italian parsley leaves, 3 tbsps nutritional yeast, 2 tsps finely grated lemon zest, 2 tbsps freshly squeezed lemon juice plus more as needed, 2 tsps kosher salt plus more as needed, 0.5 tsp freshly ground black pepper plus more as needed, 1 cup loosely packed basil leaves cut into 1/4-inch-thick ribbons",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "eggplant, kosher salt plus more as needed, extra-virgin olive oil, None  Freshly ground black pepper, finely chopped fresh italian parsley leaves, red wine vinegar, None  Pinch red pepper flakes, cans whole peeled tomatoes preferably san marzano, extra-virgin olive oil, medium yellow onion finely chopped, medium garlic cloves minced, tomato paste, bay leaf, red pepper flakes plus more as needed, None  Kosher salt, capers, None  Kosher salt, dried lasagna noodles, soft tofu drained, finely chopped italian parsley leaves, nutritional yeast, finely grated lemon zest, freshly squeezed lemon juice plus more as needed, kosher salt plus more as needed, freshly ground black pepper plus more as needed, loosely packed basil leaves cut into 1/4-inch-thick ribbons"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfdf",
+        "title": "Vegan Raspberry Streusel Bars",
+        "image_url": "http://forkify-api.herokuapp.com/images/rasberrystreusalbars5643179fa.jpg",
+        "publisher": "Elana's Pantry",
+        "source_url": "http://www.elanaspantry.com/vegan-raspberry-streusel-bars/",
+        "cooking_time": 60,
+        "ingredients": "2 cups blanched almond flour, 1 tsp celtic sea salt, 2 tbsps coconut oil, 1 tbsp vanilla extract, 1 tbsp water, 1 cup raspberry jam, 1 cup coconut oil, 1 cup blanched almond flour, 2 tbsps xylitol, 1 tsp celtic sea salt, 1 cup walnuts chopped, 1 cup unsweetened shredded coconut",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "blanched almond flour, celtic sea salt, coconut oil, vanilla extract, water, raspberry jam, coconut oil, blanched almond flour, xylitol, celtic sea salt, walnuts chopped, unsweetened shredded coconut"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc8d",
+        "title": "Vegetable Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/lasagnad1d7.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2011/04/vegetable-lasagna/",
+        "cooking_time": 120,
+        "ingredients": "10 oz weight lasagna noodles, 2 tbsps olive oil, 1  whole medium onion, 4  cloves garlic, 1  whole red bell pepper diced, 24 oz weight white mushrooms chopped, 4  whole squash diced, 1  can whole tomatoes, 0.5 cup white wine, 0.25 cup fresh parsley chopped, 0.5 tsp kosher salt, None  Freshly ground black pepper, 0.5 tsp red pepper flakes, 30 oz weight ricotta cheese, 2  whole eggs, 0.5 cup grated parmesan, 0.25 tsp kosher salt, None  Freshly ground black pepper, 1 pound thinly sliced mozarella cheese, None  Extra parmesan cheese for sprinkling",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "weight lasagna noodles, olive oil, whole medium onion, cloves garlic, whole red bell pepper diced, weight white mushrooms chopped, whole squash diced, can whole tomatoes, white wine, fresh parsley chopped, kosher salt, None  Freshly ground black pepper, red pepper flakes, weight ricotta cheese, whole eggs, grated parmesan, kosher salt, None  Freshly ground black pepper, pound thinly sliced mozarella cheese, None  Extra parmesan cheese for sprinkling"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca5a",
+        "title": "Vegetable Masala",
+        "image_url": "http://forkify-api.herokuapp.com/images/620307fd0f.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Vegetable-Masala/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "2  potatoes peeled and cubed, 1  carrot chopped, 10  french-style green beans chopped, 1  quart cold water, 0.5 cup frozen green peas thawed, 1 tsp salt, 0.5 tsp ground turmeric, 1 tbsp vegetable oil, 1 tsp mustard seed, 1 tsp ground cumin, 1  onion finely chopped, 2  tomatoes - blanched peeled and chopped, 1 tsp garam masala, 0.5 tsp ground ginger, 0.5 tsp garlic powder, 0.5 tsp chili powder, 1  sprig cilantro leaves for garnish",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "potatoes peeled and cubed, carrot chopped, french-style green beans chopped, quart cold water, frozen green peas thawed, salt, ground turmeric, vegetable oil, mustard seed, ground cumin, onion finely chopped, tomatoes - blanched peeled and chopped, garam masala, ground ginger, garlic powder, chili powder, sprig cilantro leaves for garnish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbb9",
+        "title": "Vegetable Shepherd's Pie",
+        "image_url": "http://forkify-api.herokuapp.com/images/vegetableshepherdpie2_300a7dcc807.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/vegetable-shepherds-pie-10000001548792/index.html",
+        "cooking_time": 60,
+        "ingredients": "2 pounds sweet potatoes peeled and cut into 2-inch chunks, 1 tbsp plus 1/2 tsp kosher salt, 6 tbsps unsalted butter, 1  large yellow onion thinly sliced, 2  parsnips peeled and sliced 1/4 inch thick, 2  stalks celery sliced 1/4 inch thick, 2  medium fennel bulbs cut into a 1/2-inch dice, 2 cups brussels sprouts halved, 2 tbsps chopped fresh flat-leaf parsley leaves, 0.5 tsp black pepper, 1  14.5-oz can vegetable broth, 3 cups fresh spinach or torn swiss chard leaves",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "sweet potatoes peeled and cut into 2-inch chunks, plus 1/kosher salt, unsalted butter, large yellow onion thinly sliced, parsnips peeled and sliced 1/inch thick, stalks celery sliced 1/inch thick, medium fennel bulbs cut into a 1/2-inch dice, brussels sprouts halved, chopped fresh flat-leaf parsley leaves, black pepper, 14.5-oz can vegetable broth, fresh spinach or torn swiss chard leaves"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb7a",
+        "title": "Vegetable Soup with Sweet Basil",
+        "image_url": "http://forkify-api.herokuapp.com/images/vegetablesoupsweetbasil300x2008958aca5.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/vegetable_soup_with_sweet_basil/",
+        "cooking_time": 105,
+        "ingredients": "2  small leeks white part only, 1  large potato peeled, 1  small onion, 2  stalks celery, 1  medium zucchini, 12  green beans, 2  medium carrots peeled, 6 tbsps olive oil, 3 tbsps water, 2  quarts chicken stock *, 4  to 6 ripe tomatoes peeled and seeded, 4  medium garlic cloves, 30  fresh basil leaves washed and dried, None  Salt, 0.5 tsp freshly ground black pepper, None  A few drops of tabasco sauce",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "small leeks white part only, large potato peeled, small onion, stalks celery, medium zucchini, green beans, medium carrots peeled, olive oil, water, quarts chicken stock *, to ripe tomatoes peeled and seeded, medium garlic cloves, fresh basil leaves washed and dried, None  Salt, freshly ground black pepper, None  A few drops of tabasco sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd42",
+        "title": "Vegetarian Lentil Burgers",
+        "image_url": "http://forkify-api.herokuapp.com/images/lentilburgerrecipe_07405f.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/vegetarian-lentil-burgers-recipe.html",
+        "cooking_time": 30,
+        "ingredients": "3 cups cooked black lentils, 4  large eggs, 0.5 tsp fine-grain sea salt, 1  onion finely chopped, 1 cup toasted fine bread crumbs, 1 tbsp extra-virgin olive oil",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "cooked black lentils, large eggs, fine-grain sea salt, onion finely chopped, toasted fine bread crumbs, extra-virgin olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc58",
+        "title": "Vegetarian Lettuce Wraps",
+        "image_url": "http://forkify-api.herokuapp.com/images/wraps831c.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2012/02/vegetarian-lettuce-wraps/",
+        "cooking_time": 45,
+        "ingredients": "2 tsps peanut or olive oil, 1  package firm tofu, 2  ears corn, 0.25 tsp chili powder, 0.25 cup soy sauce, None  Romaine lettuce hearts, 2  whole avocados sliced, 1 tsp balsamic vinegar",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "peanut or olive oil, package firm tofu, ears corn, chili powder, soy sauce, None  Romaine lettuce hearts, whole avocados sliced, balsamic vinegar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce1d",
+        "title": "Vegetarian Quinoa Chili",
+        "image_url": "http://forkify-api.herokuapp.com/images/quinoachili15b76.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/vegetarian-quinoa-chili/",
+        "cooking_time": 105,
+        "ingredients": "0.5 cup quinoa rinsed, 1 cup water, 1 tbsp olive oil, 1  small onion chopped, 3  cloves garlic minced, 1  jalapeno pepper diced, 1  large carrot peeled and chopped, 2  celery stalks chopped, 1  green bell pepper chopped, 1  red bell pepper chopped, 1  medium zucchini chopped, 2  cans black beans drained and rinsed, 1  can red kidney beans drained and rinsed, 3  cans diced tomatoes, 1  can tomato sauce, 5 tbsps chili powder depending on your taste, 1 tbsp ground cumin, None  Salt and black pepper to taste, None  Optional toppings: green onions avocado slices cheese sour cream greek yogurt chips crackers etc.",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "quinoa rinsed, water, olive oil, small onion chopped, cloves garlic minced, jalapeno pepper diced, large carrot peeled and chopped, celery stalks chopped, green bell pepper chopped, red bell pepper chopped, medium zucchini chopped, cans black beans drained and rinsed, can red kidney beans drained and rinsed, cans diced tomatoes, can tomato sauce, chili powder depending on your taste, ground cumin, None  Salt and black pepper to taste, None  Optional toppings: green onions avocado slices cheese sour cream greek yogurt chips crackers etc."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc872",
+        "title": "Vegetarian Sushi",
+        "image_url": "http://forkify-api.herokuapp.com/images/971066dbf6.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Vegetarian-Sushi/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1.5 cups uncooked short-grain white rice, 1.5 cups water, 0.33 cup red wine vinegar, 2 tsps white sugar, 1 tsp salt, 1  avocado - peeled pitted and thinly sliced, 1 tsp lemon juice, 0.25 cup sesame seeds or as needed, 1  cucumber - peeled seeded and cut into matchsticks, 1  green bell pepper seeded and cut into matchsticks, 1  zucchini cut into matchsticks",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "uncooked short-grain white rice, water, red wine vinegar, white sugar, salt, avocado - peeled pitted and thinly sliced, lemon juice, sesame seeds or as needed, cucumber - peeled seeded and cut into matchsticks, green bell pepper seeded and cut into matchsticks, zucchini cut into matchsticks"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbd9",
+        "title": "Vegetarian Tacos With Goat Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/knifevegetariantacos_300253a792b.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/vegetarian-tacos-spinach-corn-goat-cheese-00000000029612/index.html",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp olive oil, 1  14-oz package extra-firm tofu drained patted dry and crumbled, 1.5 tsps chili powder, 1  kosher salt and black pepper, 1  10-oz package frozen corn thawed, 8  5-oz package baby spinach, 0.75 cup small flour tortillas warmed, 0.75 cup crumbled fresh goat cheese",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "olive oil, 14-oz package extra-firm tofu drained patted dry and crumbled, chili powder, kosher salt and black pepper, 10-oz package frozen corn thawed, 5-oz package baby spinach, small flour tortillas warmed, crumbled fresh goat cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfb2",
+        "title": "Veggi-Prosciutto Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/51150600f4cb.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Veggi-Prosciutto-Pizza-51150600",
+        "cooking_time": 75,
+        "ingredients": "1  package frozen whole-wheat pizza dough thawed, 1 cup low-sodium tomato sauce, 1.5 cups grated part-skim mozzarella, 10 oz cremini mushrooms thinly sliced, 4 cups baby spinach wilted, 1  bag frozen artichoke hearts thawed and chopped, 2  thin slices prosciutto excess fat removed cut into strips, 0.75 cup grated parmesan, 1 tbsp extra-virgin olive oil, 1 tsp crushed red pepper",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "package frozen whole-wheat pizza dough thawed, low-sodium tomato sauce, grated part-skim mozzarella, cremini mushrooms thinly sliced, baby spinach wilted, bag frozen artichoke hearts thawed and chopped, thin slices prosciutto excess fat removed cut into strips, grated parmesan, extra-virgin olive oil, crushed red pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce99",
+        "title": "Veggie Cakes Recipe With Chard, Ricotta And Saffron",
+        "image_url": "http://forkify-api.herokuapp.com/images/Picture2_229080.png",
+        "publisher": "Food Republic",
+        "source_url": "http://www.foodrepublic.com/2013/04/22/veggie-cakes-recipe-chard-ricotta-and-saffron",
+        "cooking_time": 75,
+        "ingredients": "12 cups trimmed chard leaves, 2  pinches saffron threads, 1 cup white whole wheat pastry flour, 1 tsp sea salt, 1.5 tsps baking powder, 1 cup ricotta cheese, 0.33 cup or more grated parmesan cheese, 0.75 cup milk, 2  eggs, 3 tbsps olive oil or ghee plus extra for frying, None  Thick yogurt or sour cream to finish, None  Micro greens or slivered basil leaves to finish",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "trimmed chard leaves, pinches saffron threads, white whole wheat pastry flour, sea salt, baking powder, ricotta cheese, or more grated parmesan cheese, milk, eggs, olive oil or ghee plus extra for frying, None  Thick yogurt or sour cream to finish, None  Micro greens or slivered basil leaves to finish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca5d",
+        "title": "Veggie Pizza",
+        "image_url": "http://forkify-api.herokuapp.com/images/391236ba85.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Veggie-Pizza/Detail.aspx",
+        "cooking_time": 75,
+        "ingredients": "2  packages refrigerated crescent rolls, 1 cup sour cream, 1  package cream cheese softened, 1 tsp dried dill weed, 0.25 tsp garlic salt, 1  package ranch dressing mix, 1  small onion finely chopped, 1  stalk celery thinly sliced, 0.5 cup halved and thinly-sliced radishes, 1  red bell pepper chopped, 1.5 cups fresh broccoli chopped, 1  carrot grated",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "packages refrigerated crescent rolls, sour cream, package cream cheese softened, dried dill weed, garlic salt, package ranch dressing mix, small onion finely chopped, stalk celery thinly sliced, halved and thinly-sliced radishes, red bell pepper chopped, fresh broccoli chopped, carrot grated"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb7b",
+        "title": "Veggie Tacos",
+        "image_url": "http://forkify-api.herokuapp.com/images/veggietacos300x20090e4039b.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/veggie_tacos/",
+        "cooking_time": 75,
+        "ingredients": "None  Olive oil, 1 cup of roughly chopped zucchini or summer squash, 1  medium onion chopped, 1  garlic clove chopped, 1  large fresh mild green chile seeds and stem discarded chopped, 1  fresh jalapeo chile pepper seeds and stem discarded minced, None  Salt, None  Pinch of ground cumin, None  Pinch of ground oregano, 1  small to medium tomato chopped, 4  corn tortillas, 4  slices cheddar cheese, 0.25 cup crumbled mexican cotija cheese, None  A few sprigs of fresh cilantro chopped",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "None  Olive oil, of roughly chopped zucchini or summer squash, medium onion chopped, garlic clove chopped, large fresh mild green chile seeds and stem discarded chopped, fresh jalapeo chile pepper seeds and stem discarded minced, None  Salt, None  Pinch of ground cumin, None  Pinch of ground oregano, small to medium tomato chopped, corn tortillas, slices cheddar cheese, crumbled mexican cotija cheese, None  A few sprigs of fresh cilantro chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce47",
+        "title": "Veggie shepherd's pie with sweet potato mash",
+        "image_url": "http://forkify-api.herokuapp.com/images/4382_MEDIUM2cec.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/4382/veggie-shepherds-pie-with-sweet-potato-mash",
+        "cooking_time": 60,
+        "ingredients": "1 tbsp olive oil, 1  large onion halved and sliced, 2  large carrots cut into sugar-cube size pieces, 2 tbsps thyme chopped, 200 ml red wine, 400 g can chopped tomatoes, 2  vegetable stock cubes, 410 g can green lentils, 950 g sweet potatoes peeled and cut into chunks, 25 g butter, 85 g vegetarian mature cheddar grated",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "olive oil, large onion halved and sliced, large carrots cut into sugar-cube size pieces, thyme chopped, ml red wine, can chopped tomatoes, vegetable stock cubes, can green lentils, sweet potatoes peeled and cut into chunks, butter, vegetarian mature cheddar grated"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf62",
+        "title": "Venison with quince",
+        "image_url": "http://forkify-api.herokuapp.com/images/166611_MEDIUMe73c.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/166611/venison-with-quince",
+        "cooking_time": 60,
+        "ingredients": "2  small venison haunch steaks, 1  rosemary sprig, 1 tbsp extra-virgin olive oil plus regular oil for frying, 2 tsps butter, 1  quince peeled cored and cut into eighths and 1 rosemary sprig, 1 tbsp caster sugar, 1 tbsp butter, 25 g butter, 30 ml red wine, 200 ml chicken or game stock, 1 tbsp quince paste or membrillo",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "small venison haunch steaks, rosemary sprig, extra-virgin olive oil plus regular oil for frying, butter, quince peeled cored and cut into eighths and rosemary sprig, caster sugar, butter, butter, ml red wine, ml chicken or game stock, quince paste or membrillo"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0a9",
+        "title": "Watermelon Lemonade Cocktail Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/10549_RecipeImage_620x413_watermelon_lemonade_cocktail9f42.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/10549-watermelon-lemonade",
+        "cooking_time": 45,
+        "ingredients": "3 pounds seedless watermelon rind removed and cut into 1-inch cubes, 1 cup light rum, 1 cup freshly squeezed lemon juice, 0.5 cup blackberry or raspberry liqueur, 2 tbsps granulated sugar, None  Ice, None  Blackberries for garnish",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "seedless watermelon rind removed and cut into 1-inch cubes, light rum, freshly squeezed lemon juice, blackberry or raspberry liqueur, granulated sugar, None  Ice, None  Blackberries for garnish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd55",
+        "title": "Vietnamese Pho: Beef Noodle Soup Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/vietnamesephorecipe2200x150b8fd.jpg",
+        "publisher": "Steamy Kitchen",
+        "source_url": "http://www.steamykitchen.com/271-vietnamese-beef-noodle-soup-pho.html",
+        "cooking_time": 120,
+        "ingredients": "None  The broth, 2  onions halved, 4  nub of ginger halved lengthwise, 5  lbs of good beef bones preferably leg and knuckle, 1  lb of beef meat - chuck brisket rump cut into large slices [optional], 6  quarts of water, 1  package of pho spices [1 cinnamon stick 1 tbl coriander seeds 1 tbl fennel seeds 5 whole star anise 1 cardamom pod 6 whole cloves - in mesh bag], 1.5 tbsps kosher salt, 0.25 cup fish sauce, 1  inch chunk of yellow rock sugar - or 1oz of regular sugar, None  The bowls, 2  lbs rice noodles, None  Cooked beef from the broth, 1  lb flank london broil sirloin or eye of round sliced as thin as possible., None  Big handful of each: mint cilantro basil, 2  limes cut into wedges, 2  chili peppers sliced, 2  big handfuls of bean sprouts, None  Hoisin sauce, None  Sriracha hot sauce",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "None  The broth, onions halved, nub of ginger halved lengthwise, lbs of good beef bones preferably leg and knuckle, lb of beef meat - chuck brisket rump cut into large slices [optional], quarts of water, package of pho spices [cinnamon stick tbl coriander seeds tbl fennel seeds whole star anise cardamom pod whole cloves - in mesh bag], kosher salt, fish sauce, inch chunk of yellow rock sugar - or 1oz of regular sugar, None  The bowls, lbs rice noodles, None  Cooked beef from the broth, lb flank london broil sirloin or eye of round sliced as thin as possible., None  Big handful of each: mint cilantro basil, limes cut into wedges, chili peppers sliced, big handfuls of bean sprouts, None  Hoisin sauce, None  Sriracha hot sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc10",
+        "title": "Vietnamese Style Spicy Caramel Chicken Wings",
+        "image_url": "http://forkify-api.herokuapp.com/images/Vietnamese2BStyle2BCaramel2BChicken2BWings2B5002B3264782d3d3f.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2013/02/vietnamese-style-spicy-caramel-chicken.html",
+        "cooking_time": 45,
+        "ingredients": "0.25 cup water, 0.5 cup sugar, 0.25 cup fish sauce, 2 tbsps lime juice, 2 tbsps chili sauce or to taste, 2  cloves garlic chopped, 2 pounds chicken wings rinsed and pat dry",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "water, sugar, fish sauce, lime juice, chili sauce or to taste, cloves garlic chopped, chicken wings rinsed and pat dry"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd04d",
+        "title": "Volcano cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/2459646_MEDIUM989a.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/2459646/volcano-cake",
+        "cooking_time": 75,
+        "ingredients": "300 g butter very soft, 350 g caster sugar, 6  eggs, 300 g self-raising flour, 2 tbsps milk, None  Red paste food colouring, 100 g apricot glaze or sieved apricot jam warmed, 500 g marzipan, 200 g plain chocolate, None  About 250g assorted chocolate honeycomb chunks chocolate raisins maltesers caramel popcorn etc plus plastic dinosaurs cake sparklers or fountains etc to decorate",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "butter very soft, caster sugar, eggs, self-raising flour, milk, None  Red paste food colouring, apricot glaze or sieved apricot jam warmed, marzipan, plain chocolate, None  About 250g assorted chocolate honeycomb chunks chocolate raisins maltesers caramel popcorn etc plus plastic dinosaurs cake sparklers or fountains etc to decorate"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb7c",
+        "title": "Waldorf Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/waldorfsalad300x20000f287fd.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/waldorf_salad/",
+        "cooking_time": 60,
+        "ingredients": "0.5 cup chopped slightly toasted walnuts, 0.5 cup celery thinly sliced, 0.5 cup red seedless grapes sliced, 1  sweet apple cored and chopped, 3 tbsps mayonnaise, 1 tbsp fresh lemon juice, None  Salt, None  Pepper, None  Lettuce",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "chopped slightly toasted walnuts, celery thinly sliced, red seedless grapes sliced, sweet apple cored and chopped, mayonnaise, fresh lemon juice, None  Salt, None  Pepper, None  Lettuce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaeb",
+        "title": "Warm Mushroom, Roasted Asparagus and Wild Rice Salad with Feta",
+        "image_url": "http://forkify-api.herokuapp.com/images/Warm2BMushroom2Band2BRoasted2BAsparagus2BWild2BRice2BSalad2Bwith2Band2BFeta2B5002B71693724de9b.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/06/warm-mushroom-and-wild-rice-salad-with.html",
+        "cooking_time": 90,
+        "ingredients": "0.5 cup wild rice, 1.25 cups broth chicken or vegetable, 1 tbsp oil, 1  onion diced, 2  cloves garlic chopped, 8 oz mushrooms cleaned and sliced, None  Salt and pepper to taste, 1 tbsp oil, None  Salt and pepper to taste, 1 pound asparagus trimmed, 1  handful dill chopped, 0.25 cup balsamic vinaigrette, 4 cups salad greens, 0.25 cup feta or goat cheese or blue cheese crumbled",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "wild rice, broth chicken or vegetable, oil, onion diced, cloves garlic chopped, mushrooms cleaned and sliced, None  Salt and pepper to taste, oil, None  Salt and pepper to taste, pound asparagus trimmed, handful dill chopped, balsamic vinaigrette, salad greens, feta or goat cheese or blue cheese crumbled"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0a6",
+        "title": "Warm mackerel & beetroot salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/3215_MEDIUM4350.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/3215/warm-mackerel-and-beetroot-salad",
+        "cooking_time": 60,
+        "ingredients": "450 g new potatoes cut into bite-size pieces, 3  smoked mackerel fillets skinned, 250 g pack cooked beetroot, 100 g bag mixed salad leaves, 2  celery sticks finely sliced, 50 g walnut pieces, 6 tbsps good-quality salad dessing, 2 tsps creamed horseradish sauce",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "new potatoes cut into bite-size pieces, smoked mackerel fillets skinned, pack cooked beetroot, bag mixed salad leaves, celery sticks finely sliced, walnut pieces, good-quality salad dessing, creamed horseradish sauce"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd070",
+        "title": "Warm potato & tuna salad with pesto dressing",
+        "image_url": "http://forkify-api.herokuapp.com/images/1803_MEDIUM1790.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/1803/warm-potato-and-tuna-salad-with-pesto-dressing",
+        "cooking_time": 60,
+        "ingredients": "650 g new potatoes halved lengthways if large, 2 tbsps pesto, 4 tbsps olive oil, 8  cherry tomatoes, 175 g can tuna, 200 g green beans halved, None  Couple of handfuls of spinach preferably baby leaves tear if larger",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "new potatoes halved lengthways if large, pesto, olive oil, cherry tomatoes, can tuna, green beans halved, None  Couple of handfuls of spinach preferably baby leaves tear if larger"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd7c",
+        "title": "Watermelon & Grapefruit Agua Fresca",
+        "image_url": "http://forkify-api.herokuapp.com/images/watermelon_and_grapefruit_agua_fresca_6463147.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2012/06/watermelon-and-grapefruit-agua-fresca",
+        "cooking_time": 15,
+        "ingredients": "18 cups chopped seedless watermelon, 1.25 cups fresh white ruby red or pink grapefruit juice",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "chopped seedless watermelon, fresh white ruby red or pink grapefruit juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca63",
+        "title": "Watermelon Cooler Slushy",
+        "image_url": "http://forkify-api.herokuapp.com/images/247594cb43.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Watermelon-Cooler-Slushy/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "4 cups cubed seedless watermelon, 10  ice cubes, 0.33 cup fresh lime juice, 0.25 cup white sugar, 0.13 tsp salt",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "cubed seedless watermelon, ice cubes, fresh lime juice, white sugar, salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca64",
+        "title": "Watermelon Fire and Ice Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/66556526b1.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Watermelon-Fire-And-Ice-Salsa/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "3 cups chopped watermelon, 0.5 cup chopped green bell pepper, 2 tbsps lime juice, 2 tbsps chopped fresh cilantro, 1 tbsp chopped green onions, 1 tbsp chopped jalapeno pepper, 0.5 tsp garlic salt",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "chopped watermelon, chopped green bell pepper, lime juice, chopped fresh cilantro, chopped green onions, chopped jalapeno pepper, garlic salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf1f",
+        "title": "Watermelon Margarita Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30705_RecipeImage_620x413_watermellon_margaritae2e9.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30705-watermelon-margarita",
+        "cooking_time": 30,
+        "ingredients": "3 pounds seedless watermelon rind removed and cut into 1-inch cubes, 1  bottle silver 100 percent agave tequila, 6 oz freshly squeezed lime juice, 3 oz peach liqueur, None  Ice, None  Lime wedges for serving",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "seedless watermelon rind removed and cut into 1-inch cubes, bottle silver percent agave tequila, freshly squeezed lime juice, peach liqueur, None  Ice, None  Lime wedges for serving"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd09f",
+        "title": "Watermelon Martinis",
+        "image_url": "http://forkify-api.herokuapp.com/images/SugarBabyWatermelon1of119309.jpg",
+        "publisher": "Bunky Cooks",
+        "source_url": "http://www.bunkycooks.com/2010/08/watermelon-martinis-oh-sweet-sugar-baby/",
+        "cooking_time": 30,
+        "ingredients": "1 cup strained sweet fresh watermelon juice, 0.5 cup good vodka, None  Squeeze of fresh lime juice, None  Ice cubes, None  Sugar to rim the glasses, None  Watermelon slices for garnish",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "strained sweet fresh watermelon juice, good vodka, None  Squeeze of fresh lime juice, None  Ice cubes, None  Sugar to rim the glasses, None  Watermelon slices for garnish"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd049",
+        "title": "Watermelon Pico de Gallo",
+        "image_url": "http://forkify-api.herokuapp.com/images/watermelon12a75.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2013/06/watermelon-pico-de-gallo/",
+        "cooking_time": 45,
+        "ingredients": "1  whole small seedless watermelon diced, 1  whole red onion diced, 1  whole red bell pepper seeded and diced, 1  whole green bell pepper seeded and finely diced, 1  whole yellow bell pepper seeded and finely diced, 2  whole jalapeos seeded and finely diced, 1  whole bunch cilantro chopped, 2  whole juice of 1 to 2 limes, 0.5 tsp salt",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "whole small seedless watermelon diced, whole red onion diced, whole red bell pepper seeded and diced, whole green bell pepper seeded and finely diced, whole yellow bell pepper seeded and finely diced, whole jalapeos seeded and finely diced, whole bunch cilantro chopped, whole juice of to imes, salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca66",
+        "title": "Watermelon Sangria",
+        "image_url": "http://forkify-api.herokuapp.com/images/2505985637.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Watermelon-Sangria/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "12 cups cubed watermelon, 1  bottle dry white wine, 1 cup vodka, 0.5 cup triple sec, 0.5 cup simple syrup, 3 cups cubed seeded watermelon, 1  medium lime quartered, 1  orange cut into wedges, 1 cup fresh blueberries",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "cubed watermelon, bottle dry white wine, vodka, triple sec, simple syrup, cubed seeded watermelon, medium lime quartered, orange cut into wedges, fresh blueberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd75",
+        "title": "Watermelon Soda Float",
+        "image_url": "http://forkify-api.herokuapp.com/images/watermelonsodafloat6467c3f.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2012/09/watermelon-soda-float",
+        "cooking_time": 60,
+        "ingredients": "1 pint store-bought vanilla frozen yogurt preferably greek style, 1.5 tbsps finely grated lime zest, 1 tbsp fresh lime juice, 1  medium watermelon chilled plus ½ cantaloupe, 0.33 cup sugar, 1 tbsp fresh lime juice, None  Pinch of kosher salt, 1 cup seltzer",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "store-bought vanilla frozen yogurt preferably greek style, finely grated lime zest, fresh lime juice, medium watermelon chilled plus ½ cantaloupe, sugar, fresh lime juice, None  Pinch of kosher salt, seltzer"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca62",
+        "title": "Watermelon and Strawberry Lemonade",
+        "image_url": "http://forkify-api.herokuapp.com/images/224296ce5f.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Watermelon-And-Strawberry-Lemonade/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "8 cups cubed seeded watermelon, 1 cup fresh strawberries halved, 0.5 cup fresh lemon juice, 1 cup white sugar, 2 cups water",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "cubed seeded watermelon, fresh strawberries halved, fresh lemon juice, white sugar, water"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0c4",
+        "title": "Watermelon, Feta, and Arugula Salad with Balsamic Glaze",
+        "image_url": "http://forkify-api.herokuapp.com/images/353890c673.jpg",
+        "publisher": "Epicurious",
+        "source_url": "http://www.epicurious.com/recipes/food/views/Watermelon-Feta-and-Arugula-Salad-with-Balsamic-Glaze-353890",
+        "cooking_time": 30,
+        "ingredients": "1  5-oz package baby arugula, 8 cups 3/4-inch cubes seedless watermelon, 1  7-oz package feta cheese crumbled, 2 tbsps balsamic vinegar glaze",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "5-oz package baby arugula, 3/4-inch cubes seedless watermelon, 7-oz package feta cheese crumbled, balsamic vinegar glaze"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bceed",
+        "title": "Watermelon, prawn & avocado salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/681659_MEDIUMfdbc.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/681659/watermelon-prawn-and-avocado-salad",
+        "cooking_time": 75,
+        "ingredients": "1  small red onion finely chopped, 1  fat garlic clove crushed, 1  small red chilli finely chopped, None  Juice 1 lime, 1 tbsp rice or white wine vinegar, 1 tsp caster sugar, None  Watermelon wedge deseeded and diced, 1  avocado diced, None  Small bunch coriander leaves chopped, 200 g cooked tiger prawns defrosted if frozen",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "small red onion finely chopped, fat garlic clove crushed, small red chilli finely chopped, None  Juice ime, rice or white wine vinegar, caster sugar, None  Watermelon wedge deseeded and diced, avocado diced, None  Small bunch coriander leaves chopped, cooked tiger prawns defrosted if frozen"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcffa",
+        "title": "Watermelon-Soju Cocktail Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/watermelon_suju_cocktail_60037a8.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/25681-watermelon-soju-cocktail",
+        "cooking_time": 45,
+        "ingredients": "6 cups seedless watermelon large dice, 8 oz soju, 2 oz ginger liqueur such as domaine de canton, 1 oz freshly squeezed lime juice, None  Ice",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "seedless watermelon large dice, soju, ginger liqueur such as domaine de canton, freshly squeezed lime juice, None  Ice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd66",
+        "title": "Weeknight Chorizo and Clam Paella",
+        "image_url": "http://forkify-api.herokuapp.com/images/weeknightchorizoandclampaella646b191.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/quick-recipes/2012/10/weeknight-chorizo-and-clam-paella",
+        "cooking_time": 75,
+        "ingredients": "2 cups low-sodium chicken broth, None  Pinch of saffron threads, 8  scrubbed littleneck clams, 2 tbsps olive oil, 2 oz cured spanish chorizo sliced into 1/8-inch-thick rounds, 0.5 cup minced onion, 3  garlic cloves thinly sliced, 1 tsp smoked paprika, 1.5 cups arborio rice, None  Kosher salt and freshly ground black pepper, 0.33 cup dry white wine, 1  large roasted red pepper from a jar drained cut into 1/4-inch-wide strips, 0.5 cup frozen peas thawed",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "low-sodium chicken broth, None  Pinch of saffron threads, scrubbed littleneck clams, olive oil, cured spanish chorizo sliced into 1/8-inch-thick rounds, minced onion, garlic cloves thinly sliced, smoked paprika, arborio rice, None  Kosher salt and freshly ground black pepper, dry white wine, large roasted red pepper from a jar drained cut into 1/4-inch-wide strips, frozen peas thawed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf31",
+        "title": "Western Omelet Breakfast Sandwich with Ham, Peppers & Salsa",
+        "image_url": "http://forkify-api.herokuapp.com/images/BreakfastSandwichb31c.jpg",
+        "publisher": "Cookin Canuck",
+        "source_url": "http://www.cookincanuck.com/2013/02/western-omelet-breakfast-sandwich-recipe-with-ham-peppers-salsa/",
+        "cooking_time": 60,
+        "ingredients": "2  large eggs, 1  large egg white, 2 tbsps water, 1 tsp olive oil, 0.33 cup diced red bell pepper, 1  green onion thinly sliced white and green parts separated, 2  oz. diced ham, 0.25 tsp ground pepper, 2  whole wheat english muffins split in half and toasted, 2 tbsps salsa",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "large eggs, large egg white, water, olive oil, diced red bell pepper, green onion thinly sliced white and green parts separated, oz. diced ham, ground pepper, whole wheat english muffins split in half and toasted, salsa"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca68",
+        "title": "White Chocolate and Passion Fruit Cheesecake",
+        "image_url": "http://forkify-api.herokuapp.com/images/245339d974.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/White-Chocolate-And-Passion-Fruit-Cheesecake/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "1 tbsp melted butter, 1.25 cups tea biscuits crushed, 4 tbsps butter melted, 4 oz white chocolate chopped, 0.5 cup half-and-half or light cream, 1  package cream cheese softened, 1  container mascarpone cheese, 0.25 cup superfine sugar, 3  egg yolks, 0.5 cup passion fruit pulp, 3  egg whites, 0.25 cup confectioners' sugar for dusting, 6  passion fruit pulp removed",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "melted butter, tea biscuits crushed, butter melted, white chocolate chopped, half-and-half or light cream, package cream cheese softened, container mascarpone cheese, superfine sugar, egg yolks, passion fruit pulp, egg whites, confectioners' sugar for dusting, passion fruit pulp removed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf26",
+        "title": "White Nectarine Ice Cream",
+        "image_url": "http://forkify-api.herokuapp.com/images/WhiteNectarineIceCream50b6.jpg",
+        "publisher": "Whats Gaby Cooking",
+        "source_url": "http://whatsgabycooking.com/white-nectarine-ice-cream/",
+        "cooking_time": 45,
+        "ingredients": "4  large white nectarinespitted and chopped, 0.5 cup water, 0.75 cup sugar, 0.5 cup sour cream, 1 cup heavy cream, 0.5 tsp vanilla extract, 1 tsp meyer juice",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "large white nectarinespitted and chopped, water, sugar, sour cream, heavy cream, vanilla extract, meyer juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbdf",
+        "title": "White Peach Floats",
+        "image_url": "http://forkify-api.herokuapp.com/images/whitepeachfloatsb_300ac294218.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/white-peach-floats-10000001072773/index.html",
+        "cooking_time": 45,
+        "ingredients": "0.67 cup granulated sugar, 1  2-inch piece fresh ginger roughly chopped, 4 pounds ripe white peaches roughly chopped, 4  juice of 1 lemon",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "granulated sugar, 2-inch piece fresh ginger roughly chopped, ripe white peaches roughly chopped, juice of emon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca69",
+        "title": "White Peach Sangria",
+        "image_url": "http://forkify-api.herokuapp.com/images/827522d5b0.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/White-Peach-Sangria/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  bottle dry white wine, 0.75 cup peach flavored vodka, 6 tbsps frozen lemonade concentrate thawed, 0.25 cup white sugar, 1 pound white peaches pitted and sliced, 0.75 cup seedless red grapes halved, 0.75 cup seedless green grapes halved",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "bottle dry white wine, peach flavored vodka, frozen lemonade concentrate thawed, white sugar, pound white peaches pitted and sliced, seedless red grapes halved, seedless green grapes halved"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd10d",
+        "title": "Whole Roasted Cauliflower with Whipped Goat Cheese",
+        "image_url": "http://forkify-api.herokuapp.com/images/wholeroastedcauliflowerwithwhippedgoatcheese6467c71.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2013/05/whole-roasted-cauliflower-with-whipped-goat-cheese",
+        "cooking_time": 75,
+        "ingredients": "2.5 cups dry white wine, 0.33 cup olive oil, 0.25 cup kosher salt, 3 tbsps fresh lemon juice, 2 tbsps unsalted butter, 1 tbsp crushed red pepper flakes, 1 tbsp sugar, 1  bay leaf, 1  head of cauliflower leaves removed, 4 oz fresh goat cheese, 3 oz cream cheese, 3 oz feta, 0.33 cup heavy cream, 2 tbsps olive oil plus more for serving, None  Coarse sea salt",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "dry white wine, olive oil, kosher salt, fresh lemon juice, unsalted butter, crushed red pepper flakes, sugar, bay leaf, head of cauliflower leaves removed, fresh goat cheese, cream cheese, feta, heavy cream, olive oil plus more for serving, None  Coarse sea salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccf9",
+        "title": "Whole Wheat Blackberry Ricotta Scones",
+        "image_url": "http://forkify-api.herokuapp.com/images/ricotta_scone_recipea30d.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/whole-wheat-blackberry-ricotta-scones-recipe.html",
+        "cooking_time": 45,
+        "ingredients": "1 cup whole-wheat flour, 1 cup all-purpose flour, 1 tbsp baking powder preferably aluminum-free, 0.25 cup sugar, 0.5 tsp fine grain sea salt, 6 tbsps unsalted butter chilled, 1 cup fresh blackberries, 0.75 cup whole-milk ricotta, 0.33 cup heavy cream",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "whole-wheat flour, all-purpose flour, baking powder preferably aluminum-free, sugar, fine grain sea salt, unsalted butter chilled, fresh blackberries, whole-milk ricotta, heavy cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca6b",
+        "title": "Whole Wheat Blueberry Pancakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/2877347c1b.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Whole-Wheat-Blueberry-Pancakes/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "1.25 cups whole wheat flour, 2 tsps baking powder, 1  egg, 1 cup milk plus more if necessary, 0.5 tsp salt, 1 tbsp artificial sweetener, 0.5 cup blueberries",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "whole wheat flour, baking powder, egg, milk plus more if necessary, salt, artificial sweetener, blueberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bccfe",
+        "title": "Whole Wheat Chocolate Chip Skillet Cookies",
+        "image_url": "http://forkify-api.herokuapp.com/images/whole_wheat_chocolatechip_skillet_cookies2cab.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/whole-wheat-chocolate-chip-skillet-cookies-recipe.html",
+        "cooking_time": 75,
+        "ingredients": "3 cups / 13.5 oz / 380 g whole-wheat flour, 1.5 tsps baking powder, 1 tsp baking soda, 1.25 tsps fine grain sea salt, 8 oz / 225 g cold unsalted butter cut into 1/2-inch pieces plus more for buttering the pan, 1 cup / 5 oz / 140 g dark brown sugar, 1 cup / 7 oz / 200 g sugar, 2  large eggs, 2 tsps pure vanilla extract, 8 oz / 225 g bittersweet chocolate roughly chopped into 1/4- and 1/2-inch pieces",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "/ / whole-wheat flour, baking powder, baking soda, fine grain sea salt, / cold unsalted butter cut into 1/2-inch pieces plus more for buttering the pan, / / dark brown sugar, / / sugar, large eggs, pure vanilla extract, / bittersweet chocolate roughly chopped into 1/4- and 1/2-inch pieces"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bced5",
+        "title": "Whole roasted masala chicken and potatoes",
+        "image_url": "http://forkify-api.herokuapp.com/images/whole_roasted_masala_77631_16x9ee01.jpg",
+        "publisher": "BBC Food",
+        "source_url": "http://www.bbc.co.uk/food/recipes/whole_roasted_masala_77631",
+        "cooking_time": 90,
+        "ingredients": "4 tbsps lemon juice, 2 tbsps peeled finely chopped root ginger, 2 tbsps finely chopped or crushed garlic, 3  hot green chillies, 1 tsp salt, 1 tsp ground coriander, 1 tsp garam masala, 1 g whole chicken, 1 tsp chilli powder, 1 tsp freshly ground black pepper, 6 tbsps olive or sunflower oil, 5  medium potatoes, 1 tsp of salt, 1 tsp freshly ground black pepper, 1 tsp ground coriander, 1 tsp ground cumin, 1 tsp turmeric, 1 tsp kashmiri chilli powder",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "lemon juice, peeled finely chopped root ginger, finely chopped or crushed garlic, hot green chillies, salt, ground coriander, garam masala, whole chicken, chilli powder, freshly ground black pepper, olive or sunflower oil, medium potatoes, of salt, freshly ground black pepper, ground coriander, ground cumin, turmeric, kashmiri chilli powder"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca6e",
+        "title": "Yummy Honey Chicken Kabobs",
+        "image_url": "http://forkify-api.herokuapp.com/images/1184378c8a.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Yummy-Honey-Chicken-Kabobs/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "0.25 cup vegetable oil, 0.33 cup honey, 0.33 cup soy sauce, 0.25 tsp ground black pepper, 8  skinless boneless chicken breast halves - cut into 1 inch cubes, 2  cloves garlic, 5  small onions cut into 2 inch pieces, 2  red bell peppers cut into 2 inch pieces, None  Skewers",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "vegetable oil, honey, soy sauce, ground black pepper, skinless boneless chicken breast halves - cut into inch cubes, cloves garlic, small onions cut into inch pieces, red bell peppers cut into inch pieces, None  Skewers"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcffc",
+        "title": "Wild Mushroom and Beef Stir-Fry Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30123_mushroom_beef_stir_fry_3_620e7a0.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30123-wild-mushroom-and-beef-stir-fry",
+        "cooking_time": 105,
+        "ingredients": "8 oz flank steak trimmed of excess fat and sinew, 2 tsps peeled minced fresh ginger, 1 tsp soy sauce, 1 tsp vegetable oil, 0.75 tsp cornstarch, 0.75 tsp shaoxing wine or dry sherry, 0.13 tsp kosher salt, 0.13 tsp freshly ground black pepper, 2 tbsps shaoxing wine or dry sherry, 2 tbsps soy sauce, 1.5 tsps cornstarch, 0.5 tsp packed dark brown sugar, 1 tsp rice vinegar, 2 tbsps vegetable oil, 1 pound wild mushrooms cleaned ends trimmed and sliced lengthwise through the stem into 1/2-inch-wide pieces, None  Kosher salt, None  Freshly ground black pepper, 2  medium leeks halved lengthwise rinsed and sliced crosswise into 1/2-inch pieces, 2  medium celery stalks sliced crosswise into 1/4-inch pieces, 1  medium garlic clove minced",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "flank steak trimmed of excess fat and sinew, peeled minced fresh ginger, soy sauce, vegetable oil, cornstarch, shaoxing wine or dry sherry, kosher salt, freshly ground black pepper, shaoxing wine or dry sherry, soy sauce, cornstarch, packed dark brown sugar, rice vinegar, vegetable oil, pound wild mushrooms cleaned ends trimmed and sliced lengthwise through the stem into 1/2-inch-wide pieces, None  Kosher salt, None  Freshly ground black pepper, medium leeks halved lengthwise rinsed and sliced crosswise into 1/2-inch pieces, medium celery stalks sliced crosswise into 1/4-inch pieces, medium garlic clove minced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdcd",
+        "title": "Wild Rocket Salad with Crispy Parma Ham",
+        "image_url": "http://forkify-api.herokuapp.com/images/noimage2f00.recipeimage.gif",
+        "publisher": "Tasty Kitchen",
+        "source_url": "http://tastykitchen.com/recipes/salads/wild-rocket-salad-with-crispy-parma-ham/",
+        "cooking_time": 60,
+        "ingredients": "1  whole 1 whole, 3  whole 3 whole, 2 cups 2 cups, 4 cups 4 cups, 12  whole 12 whole, 16  whole 16 whole, 1 cup cups, None  Whole whole, 1 cup cups, 1 cup cups, 6  slices 6 slices",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "whole whole, whole whole, , , whole whole, whole whole, cups, None  Whole whole, cups, cups, slices slices"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbaa",
+        "title": "Winter Lentil Soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/winterlentilsoup_300f5f6a9b6.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/winter-lentil-soup-10000001151425/index.html",
+        "cooking_time": 45,
+        "ingredients": "1 tbsp olive oil, 4  leeks cut into 1/4-inch-thick half-moons, 1  28-oz can whole tomatoes drained, 2  sweet potatoes peeled and cut into 1/2-inch pieces, 1  bunch kale thick stems removed and leaves cut into 1/2-inch-wide strips, 0.5 cup brown lentils, 1 tbsp fresh thyme, 0.25 cup kosher salt and black pepper",
+        "cuisine_type": "Australian",
+        "cleaned_ingredients": "olive oil, leeks cut into 1/4-inch-thick half-moons, 28-oz can whole tomatoes drained, sweet potatoes peeled and cut into 1/2-inch pieces, bunch kale thick stems removed and leaves cut into 1/2-inch-wide strips, brown lentils, fresh thyme, kosher salt and black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd1d",
+        "title": "Winter Vegetable & Tofu Korma",
+        "image_url": "http://forkify-api.herokuapp.com/images/winter_korma_recipe9ae1.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/winter-vegetable-tofu-korma-recipe.html",
+        "cooking_time": 90,
+        "ingredients": "0.25 tsp ground cardamom, 1.5 tsps turmeric, 1.5 tsps crushed red pepper flakes, 1.5 tsps ground cumin, 1.75 tsps ground coriander, 0.25 tsp cinnamon, 2 tbsps clarified butter ghee or sunflower oil, 2  medium yellow onions very finely chopped, 1 tbsp freshly grated ginger peeled first, 4  medium cloves garlic peeled and chopped, 1.5 pounds waxy potatoes cut into 1/4-inch cubes, 12 oz / 340 g cauliflower cut into tiny trees, 0.67 cup / 65g sliced almonds toasted, 0.75 tsp fine sea salt plus more to taste, 12 oz / 340 g firm tofu cut into 1/4-inch cubes or matchsticks, 0.5 cup / 4.5 oz / 130 g greek yogurt, 0.5 cup / 120 ml heavy cream, None  A small bunch of fresh cilantro chopped",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "ground cardamom, turmeric, crushed red pepper flakes, ground cumin, ground coriander, cinnamon, clarified butter ghee or sunflower oil, medium yellow onions very finely chopped, freshly grated ginger peeled first, medium cloves garlic peeled and chopped, waxy potatoes cut into 1/4-inch cubes, / cauliflower cut into tiny trees, / 65g sliced almonds toasted, fine sea salt plus more to taste, / firm tofu cut into 1/4-inch cubes or matchsticks, / / greek yogurt, / ml heavy cream, None  A small bunch of fresh cilantro chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf8f",
+        "title": "Winter Vegetable Soup Recipe with Butternut Squash & Cauliflower",
+        "image_url": "http://forkify-api.herokuapp.com/images/WinterSoupFinalSquareSmall02ef.jpg",
+        "publisher": "Cookin Canuck",
+        "source_url": "http://www.cookincanuck.com/2013/01/winter-vegetable-soup-recipe-with-butternut-squash-cauliflower/",
+        "cooking_time": 105,
+        "ingredients": "2 tsps olive oil, 1  medium onion chopped, 2  clove garlic minced, 1  carrot cut into thin half-circles, 1  celery stalk thinly sliced, 0.25 tsp dried chile flakes, 0.5 tsp dried thyme, 0.25 tsp salt, 1 tbsp tomato paste, 3  lb. butternut squash, 1  lb. cauliflower, 1.75 cups vegetable broth, 1.75 cups water, 2  bay leaves, 0.25 cup minced italian parsley, None  Salt and pepper to taste",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "olive oil, medium onion chopped, clove garlic minced, carrot cut into thin half-circles, celery stalk thinly sliced, dried chile flakes, dried thyme, salt, tomato paste, lb. butternut squash, lb. cauliflower, vegetable broth, water, bay leaves, minced italian parsley, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca6c",
+        "title": "World’s Best Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/3242749be.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Worlds-Best-Lasagna/Detail.aspx",
+        "cooking_time": 105,
+        "ingredients": "1 pound sweet italian sausage, 0.75 pound lean ground beef, 0.5 cup minced onion, 2  cloves garlic crushed, 1  can crushed tomatoes, 2  cans tomato paste, 2  cans canned tomato sauce, 0.5 cup water, 2 tbsps white sugar, 1.5 tsps dried basil leaves, 0.5 tsp fennel seeds, 1 tsp italian seasoning, 1 tbsp salt, 0.25 tsp ground black pepper, 4 tbsps chopped fresh parsley, 12  lasagna noodles, 16 oz ricotta cheese, 1  egg, 0.5 tsp salt, 0.75 pound mozzarella cheese sliced, 0.75 cup grated parmesan cheese",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "pound sweet italian sausage, pound lean ground beef, minced onion, cloves garlic crushed, can crushed tomatoes, cans tomato paste, cans canned tomato sauce, water, white sugar, dried basil leaves, fennel seeds, italian seasoning, salt, ground black pepper, chopped fresh parsley, lasagna noodles, ricotta cheese, egg, salt, pound mozzarella cheese sliced, grated parmesan cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca6d",
+        "title": "Yankee Salad",
+        "image_url": "http://forkify-api.herokuapp.com/images/425514dc13.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Yankee-Salad/Detail.aspx",
+        "cooking_time": 45,
+        "ingredients": "1  package uncooked orzo pasta, 0.75 cup white sugar, 2  eggs beaten, 2 tbsps all-purpose flour, 0.5 tsp salt, 2  cans crushed pineapple drained with juice reserved, 1 cup mandarin orange segments drained and chopped, 1  jar maraschino cherries drained and chopped, 1  container frozen whipped topping thawed",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "package uncooked orzo pasta, white sugar, eggs beaten, all-purpose flour, salt, cans crushed pineapple drained with juice reserved, mandarin orange segments drained and chopped, jar maraschino cherries drained and chopped, container frozen whipped topping thawed"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaec",
+        "title": "Yorkshire Pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/Yorkshire2BPudding2B5002B7920722b08fd.jpg",
+        "publisher": "Closet Cooking",
+        "source_url": "http://www.closetcooking.com/2011/11/yorkshire-pudding.html",
+        "cooking_time": 45,
+        "ingredients": "1 cup flour, 1 cup milk, 3  large eggs lightly beaten, 0.5 tsp salt, 6 tbsps roast beef drippings melted",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "flour, milk, large eggs lightly beaten, salt, roast beef drippings melted"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca6f",
+        "title": "Yummy Lasagna",
+        "image_url": "http://forkify-api.herokuapp.com/images/378900ab0.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Yummy-Lasagna/Detail.aspx",
+        "cooking_time": 60,
+        "ingredients": "8 oz lasagna noodles, 1 pound lean ground beef, 2  jar spaghetti sauce, 2 pounds ricotta cheese, 0.5 cup grated romano cheese, 1  egg, 0.25 cup dried basil, 1  clove garlic pressed, 1  package sliced pepperoni sausage, 8 oz mozzarella cheese shredded",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "lasagna noodles, pound lean ground beef, jar spaghetti sauce, ricotta cheese, grated romano cheese, egg, dried basil, clove garlic pressed, package sliced pepperoni sausage, mozzarella cheese shredded"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc9b",
+        "title": "Zannie's Black-Eyed Pea Dip",
+        "image_url": "http://forkify-api.herokuapp.com/images/5309757718_74c9b53dcd_oa41d.jpg",
+        "publisher": "The Pioneer Woman",
+        "source_url": "http://thepioneerwoman.com/cooking/2010/12/zannies-black-eyed-pea-dip/",
+        "cooking_time": 45,
+        "ingredients": "1  can can black-eyed peas, 1  whole onion chopped fine, 0.25 cup sour cream, 8  slices jarred jalapenos, 1 cup grated sharp cheddar cheese, 3 tbsps salsa, None  Hot sauce to taste, None  Salt and black pepper to taste",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "can can black-eyed peas, whole onion chopped fine, sour cream, slices jarred jalapenos, grated sharp cheddar cheese, salsa, None  Hot sauce to taste, None  Salt and black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc1d",
+        "title": "Zesty Lime and Ginger Winter Fruit Salad Recipe",
+        "image_url": "http://forkify-api.herokuapp.com/images/30565_RecipeImage_620x413_lime_ginger_winter_fruit_salad8cbe.jpg",
+        "publisher": "Chow",
+        "source_url": "http://www.chow.com/recipes/30565-zesty-lime-and-ginger-winter-fruit-salad",
+        "cooking_time": 45,
+        "ingredients": "0.33 cup passion fruit juice, 2 tbsps packed light brown sugar, 2 tsps lime zest, 1 tsp peeled and finely grated fresh ginger, 2 pounds navel cara cara or blood oranges, 2 pounds kiwis peeled and cut into large dice, 3 pounds pineapple skin removed cored and cut into large dice",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "passion fruit juice, packed light brown sugar, lime zest, peeled and finely grated fresh ginger, navel cara cara or blood oranges, kiwis peeled and cut into large dice, pineapple skin removed cored and cut into large dice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca70",
+        "title": "Zesty Slow Cooker Chicken Barbeque",
+        "image_url": "http://forkify-api.herokuapp.com/images/4515542dbb.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Zesty-Slow-Cooker-Chicken-Barbecue/Detail.aspx",
+        "cooking_time": 30,
+        "ingredients": "6  frozen skinless boneless chicken breast halves, 1  bottle barbeque sauce, 0.5 cup italian salad dressing, 0.25 cup brown sugar, 2 tbsps worcestershire sauce",
+        "cuisine_type": "Ethiopian",
+        "cleaned_ingredients": "frozen skinless boneless chicken breast halves, bottle barbeque sauce, italian salad dressing, brown sugar, worcestershire sauce"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb7e",
+        "title": "Zucchini Bread",
+        "image_url": "http://forkify-api.herokuapp.com/images/zucchinibreadb300x20088eee4e6.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/zucchini_bread/",
+        "cooking_time": 75,
+        "ingredients": "2  eggs beaten, 1.33 cups sugar, 2 tsps vanilla, 3 cups grated fresh zucchini, 0.67 cup melted unsalted butter, 2 tsps baking soda, None  Pinch salt, 3 cups all-purpose flour, 0.5 tsp nutmeg, 2 tsps cinnamon, 1 cup chopped pecans or walnuts, 1 cup dried cranberries or raisins",
+        "cuisine_type": "Thai",
+        "cleaned_ingredients": "eggs beaten, sugar, vanilla, grated fresh zucchini, melted unsalted butter, baking soda, None  Pinch salt, all-purpose flour, nutmeg, cinnamon, chopped pecans or walnuts, dried cranberries or raisins"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca72",
+        "title": "Zucchini Brownies",
+        "image_url": "http://forkify-api.herokuapp.com/images/6955440c44.jpg",
+        "publisher": "All Recipes",
+        "source_url": "http://allrecipes.com/Recipe/Zucchini-Brownies/Detail.aspx",
+        "cooking_time": 90,
+        "ingredients": "0.5 cup vegetable oil, 1.5 cups white sugar, 2 tsps vanilla extract, 2 cups all-purpose flour, 0.5 cup unsweetened cocoa powder, 1.5 tsps baking soda, 1 tsp salt, 2 cups shredded zucchini, 0.5 cup chopped walnuts, 6 tbsps unsweetened cocoa powder, 0.25 cup margarine, 2 cups confectioners' sugar, 0.25 cup milk, 0.5 tsp vanilla extract",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "vegetable oil, white sugar, vanilla extract, all-purpose flour, unsweetened cocoa powder, baking soda, salt, shredded zucchini, chopped walnuts, unsweetened cocoa powder, margarine, confectioners' sugar, milk, vanilla extract"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce01",
+        "title": "Zucchini Coconut Bread",
+        "image_url": "http://forkify-api.herokuapp.com/images/zucchinicoconutbread582e8.jpg",
+        "publisher": "Two Peas and Their Pod",
+        "source_url": "http://www.twopeasandtheirpod.com/zucchini-coconut-bread/",
+        "cooking_time": 75,
+        "ingredients": "0.75 cup all-purpose gold medal flour, 0.75 cup whole wheat gold medal flour, 0.5 tsp baking soda, 0.5 tsp baking powder, 0.5 tsp salt, 0.5 tsp cinnamon, 0.25 tsp nutmeg, 1.5 cups shredded zucchini, 0.5 cup brown sugar, 0.25 cup granulated sugar, 0.25 cup coconut oil melted, 0.5 cup plain greek yogurt at room temperature, 1  large egg at room temperature, 1 tsp vanilla extract, 1 cup shredded sweetened coconut",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "all-purpose gold medal flour, whole wheat gold medal flour, baking soda, baking powder, salt, cinnamon, nutmeg, shredded zucchini, brown sugar, granulated sugar, coconut oil melted, plain greek yogurt at room temperature, large egg at room temperature, vanilla extract, shredded sweetened coconut"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd9d",
+        "title": "Zucchini Dill Pickles",
+        "image_url": "http://forkify-api.herokuapp.com/images/preserving044844bda.jpg",
+        "publisher": "Bon Appetit",
+        "source_url": "http://www.bonappetit.com/recipes/2011/08/zucchini-dill-pickles",
+        "cooking_time": 60,
+        "ingredients": "2 pounds small zucchini trimmed, 4 tbsps coarse sea salt or pickling salt divided, 12  fresh dill sprigs, 2 tsps yellow or brown mustard seeds, 1 tsp coriander seeds, 1 tsp dill seeds, 0.25 tsp saffron threads, 4  garlic cloves halved, 4  red jalape&ntilde;os or fresno chiles split lengthwise, 2.5 cups white wine vinegar, 0.25 cup sugar",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "small zucchini trimmed, coarse sea salt or pickling salt divided, fresh dill sprigs, yellow or brown mustard seeds, coriander seeds, dill seeds, saffron threads, garlic cloves halved, red jalape&ntilde;os or fresno chiles split lengthwise, white wine vinegar, sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb7f",
+        "title": "Zucchini Muffins",
+        "image_url": "http://forkify-api.herokuapp.com/images/zucchinimuffins300x20031e082ae.jpg",
+        "publisher": "Simply Recipes",
+        "source_url": "http://www.simplyrecipes.com/recipes/zucchini_muffins/",
+        "cooking_time": 60,
+        "ingredients": "3 cups grated fresh zucchini, 0.67 cup melted unsalted butter, 1.33 cups sugar, 2  eggs beaten, 2 tsps vanilla, 2 tsps baking soda, None  Pinch salt, 3 cups all-purpose flour, 2 tsps cinnamon, 0.5 tsp nutmeg, 1 cup walnuts, 1 cup raisins or dried cranberries",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "grated fresh zucchini, melted unsalted butter, sugar, eggs beaten, vanilla, baking soda, None  Pinch salt, all-purpose flour, cinnamon, nutmeg, walnuts, raisins or dried cranberries"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd0b",
+        "title": "Zucchini Ricotta Cheesecake",
+        "image_url": "http://forkify-api.herokuapp.com/images/ricotta_cheesecake_recipe_080343.jpg",
+        "publisher": "101 Cookbooks",
+        "source_url": "http://www.101cookbooks.com/archives/zucchini-ricotta-cheesecake-recipe.html",
+        "cooking_time": 75,
+        "ingredients": "2 cups zucchini unpeeled & grated, 1 tsp fine grain sea salt, 2.5 cups ricotta cheese, 0.5 cup freshly shredded parmesan cheese, 2  shallots chopped, 2  cloves garlic chopped, 0.25 cup fresh dill chopped, None  Zest of one lemon, 2  large eggs well beaten, 0.33 cup goat cheese crumbled, None  Drizzle of olive oil",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "zucchini unpeeled & grated, fine grain sea salt, ricotta cheese, freshly shredded parmesan cheese, shallots chopped, cloves garlic chopped, fresh dill chopped, None  Zest of one lemon, large eggs well beaten, goat cheese crumbled, None  Drizzle of olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb86",
+        "title": "Zucchini With Quinoa Stuffing",
+        "image_url": "http://forkify-api.herokuapp.com/images/zucchiniquinoa_3002fbc53c2.jpg",
+        "publisher": "Real Simple",
+        "source_url": "http://www.realsimple.com/food-recipes/browse-all-recipes/zucchini-quinoa-stuffing-00000000006981/index.html",
+        "cooking_time": 45,
+        "ingredients": "0.5 cup quinoa rinsed, 4  medium zucchini, 1  15-oz can cannellini beans rinsed, 1 cup grape or cherry tomatoes quartered, 0.5 cup almonds chopped, 2  cloves garlic chopped, 0.75 cup grated parmesan, 4 tbsps olive oil",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "quinoa rinsed, medium zucchini, 15-oz can cannellini beans rinsed, grape or cherry tomatoes quartered, almonds chopped, cloves garlic chopped, grated parmesan, olive oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc2e",
+        "title": "apple mosaic tart with salted caramel",
+        "image_url": "http://forkify-api.herokuapp.com/images/8101634492_afde37dc20b2d4.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/10/apple-mosaic-tart-with-salted-caramel/",
+        "cooking_time": 60,
+        "ingredients": "14 oz package puff pastry defrosted in fridge overnight, 3  large or 4 medium apples, 2 tbsps granulated sugar, 2 tbsps unsalted butter cold cut into small bits, 0.25 cup granulated sugar, 2 tbsps unsalted butter, 0.25 tsp flaky sea salt, 2 tbsps heavy cream",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "package puff pastry defrosted in fridge overnight, large or medium apples, granulated sugar, unsalted butter cold cut into small bits, granulated sugar, unsalted butter, flaky sea salt, heavy cream"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc2f",
+        "title": "apple sharlotka",
+        "image_url": "http://forkify-api.herokuapp.com/images/6647447061_817983021c3e9a.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/01/apple-sharlotka/",
+        "cooking_time": 60,
+        "ingredients": "None  Butter or nonstick spray for greasing pan, 6  large tart apples such as granny smiths, 3  large eggs, 1 cup granulated sugar, 1 tsp vanilla extract, 1 cup all-purpose flour, None  Ground cinnamon to finish, None  Powdered sugar also to finish",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "None  Butter or nonstick spray for greasing pan, large tart apples such as granny smiths, large eggs, granulated sugar, vanilla extract, all-purpose flour, None  Ground cinnamon to finish, None  Powdered sugar also to finish"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdbf",
+        "title": "asparagus, goat cheese and lemon pasta",
+        "image_url": "http://forkify-api.herokuapp.com/images/3536930521_dcbfce4033c3a0.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2009/05/asparagus-goat-cheese-and-lemon-pasta/",
+        "cooking_time": 60,
+        "ingredients": "1 pound spiral-shaped pasta, 1 pound slender asparagus spears trimmed cut into 1- to 1 1/2-inch pieces, 0.25 cup olive oil, 1 tbsp finely grated lemon peel, 2 tsps chopped fresh tarragon plus more for garnish, 1  5- to 5 1/2-oz log soft fresh goat cheese, None  Fresh lemon juice to taste",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "pound spiral-shaped pasta, pound slender asparagus spears trimmed cut into 1- to 1/2-inch pieces, olive oil, finely grated lemon peel, chopped fresh tarragon plus more for garnish, 5- to 1/2-oz log soft fresh goat cheese, None  Fresh lemon juice to taste"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bcfea",
+        "title": "baked kale chips",
+        "image_url": "http://forkify-api.herokuapp.com/images/4445956390_eb00e110e2d73b.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2010/03/baked-kale-chips/",
+        "cooking_time": 15,
+        "ingredients": "1  bunch kale, 1 tbsp olive oil, None  Sea salt to taste",
+        "cuisine_type": "Indian",
+        "cleaned_ingredients": "bunch kale, olive oil, None  Sea salt to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc90d",
+        "title": "balsamic braised brussels with pancetta",
+        "image_url": "http://forkify-api.herokuapp.com/images/4145137072_106e0cce1951ae.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2009/12/balsamic-braised-brussels-with-pancetta/",
+        "cooking_time": 75,
+        "ingredients": "1.5 cups fresh bread crumbs, 2 tsps thyme leaves, 2 tbsps extra virgin olive oil plus an extra glug or two for drizzling, 4 tbsps unsalted butter, 2 pounds medium-sized brussels sprouts washed and trimmed, None  Salt and pepper, 6 oz pancetta in small dice, 3 tbsps minced shallots, 1 tbsp minced garlic, 0.5 cup balsamic vinegar, 1.5 cups veal stock rich chicken or vegetable broth more if needed, 2 tbsps chopped parsley",
+        "cuisine_type": "Swedish",
+        "cleaned_ingredients": "fresh bread crumbs, thyme leaves, extra virgin olive oil plus an extra glug or two for drizzling, unsalted butter, medium-sized brussels sprouts washed and trimmed, None  Salt and pepper, pancetta in small dice, minced shallots, minced garlic, balsamic vinegar, veal stock rich chicken or vegetable broth more if needed, chopped parsley"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0ff",
+        "title": "best chocolate pudding",
+        "image_url": "http://forkify-api.herokuapp.com/images/2257264280_95c98f62931988.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2008/02/best-chocolate-pudding/",
+        "cooking_time": 30,
+        "ingredients": "0.25 cup cornstarch, 0.5 cup sugar, 0.13 tsp salt, 3 cups whole milk, 6 oz 62% semisweet chocolate coarsely chopped, 1 tsp pure vanilla extract",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "cornstarch, sugar, salt, whole milk, 62% semisweet chocolate coarsely chopped, pure vanilla extract"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc856",
+        "title": "blackberry gin fizz",
+        "image_url": "http://forkify-api.herokuapp.com/images/7522653556_5c90bd02257e4b.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/07/blackberry-gin-fizz/",
+        "cooking_time": 30,
+        "ingredients": "0.25 cup fresh blackberries, 2 tbsps sugar, 0.5 cup gin, 0.25 cup fresh lime juice, None  Club soda, 2  sprigs sweet basil or 2 thin lime wedges",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "fresh blackberries, sugar, gin, fresh lime juice, None  Club soda, sprigs sweet basil or thin lime wedges"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf97",
+        "title": "blueberry crumb bars",
+        "image_url": "http://forkify-api.herokuapp.com/images/2710636010_6070701ab3b1f1.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2008/07/blueberry-crumb-bars/",
+        "cooking_time": 75,
+        "ingredients": "1 cup white sugar, 1 tsp baking powder, 3 cups all-purpose flour, 1 cup cold unsalted butter, 1  egg, 0.25 tsp salt, None  Zest and juice of one lemon, 4 cups fresh blueberries, 0.5 cup white sugar, 4 tsps cornstarch",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "white sugar, baking powder, all-purpose flour, cold unsalted butter, egg, salt, None  Zest and juice of one lemon, fresh blueberries, white sugar, cornstarch"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc23",
+        "title": "broccoli parmesan fritters",
+        "image_url": "http://forkify-api.herokuapp.com/images/7362347228_f0153cc88db1af.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/06/broccoli-parmesan-fritters/",
+        "cooking_time": 45,
+        "ingredients": "8 oz fresh broccoli, 1  large egg, 0.5 cup all-purpose flour, 0.33 cup finely grated parmesan cheese, 1  small clove garlic minced, 0.5 tsp kosher salt plus more to taste, None  A pinch of red pepper flakes or several grinds of black pepper, None  Olive or vegetable oil for frying",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "fresh broccoli, large egg, all-purpose flour, finely grated parmesan cheese, small clove garlic minced, kosher salt plus more to taste, None  A pinch of red pepper flakes or several grinds of black pepper, None  Olive or vegetable oil for frying"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf7f",
+        "title": "cauliflower-feta fritters with pomegranate",
+        "image_url": "http://forkify-api.herokuapp.com/images/8241521197_86ffcda77f71d0.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/12/cauliflower-feta-fritters-with-pomegranate/",
+        "cooking_time": 75,
+        "ingredients": "1  small head cauliflower cut into generous 1 to 2 inch chunks, 1  large egg, 1  garlic clove minced, None  Few gratings of fresh lemon zest, 3 oz crumbled feta, 0.5 cup all-purpose flour, 0.25 tsp aleppo pepper flakes; less if using regular red pepper flakes which are hotter, 0.75 tsp table salt or more to taste, 0.5 tsp baking powder, None  Olive oil for frying, 0.75 cup yogurt, 0.5 tsp ground cumin, None  Salt and pepper to taste, None  Handful pomegranate arils",
+        "cuisine_type": "French",
+        "cleaned_ingredients": "small head cauliflower cut into generous to inch chunks, large egg, garlic clove minced, None  Few gratings of fresh lemon zest, crumbled feta, all-purpose flour, aleppo pepper flakes; less if using regular red pepper flakes which are hotter, table salt or more to taste, baking powder, None  Olive oil for frying, yogurt, ground cumin, None  Salt and pepper to taste, None  Handful pomegranate arils"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd064",
+        "title": "chana masala",
+        "image_url": "http://forkify-api.herokuapp.com/images/4318974369_7f67009edc8cba.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2010/02/chana-masala/",
+        "cooking_time": 90,
+        "ingredients": "1 tbsp vegetable oil, 2  medium onions minced, 1  clove garlic minced, 2 tsps grated fresh ginger, 1  fresh hot green chili pepper minced, 1 tbsp ground coriander, 2 tsps ground cumin, 0.5 tsp ground cayenne pepper, 1 tsp ground turmeric, 2 tsps cumin seeds toasted and ground, 1 tbsp amchoor powder, 2 tsps paprika, 1 tsp garam masala, 2 cups tomatoes chopped small or 1 15-oz can of whole tomatoes with their juices chopped small, 0.67 cup water, 4 cups cooked chickpeas or 2 cans chickpeas drained and rinsed, 0.5 tsp salt, 1  lemon",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "vegetable oil, medium onions minced, clove garlic minced, grated fresh ginger, fresh hot green chili pepper minced, ground coriander, ground cumin, ground cayenne pepper, ground turmeric, cumin seeds toasted and ground, amchoor powder, paprika, garam masala, tomatoes chopped small or 15-oz can of whole tomatoes with their juices chopped small, water, cooked chickpeas or chickpeas drained and rinsed, salt, lemon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc867",
+        "title": "charred pepper steak sauce",
+        "image_url": "http://forkify-api.herokuapp.com/images/7734913732_3238e2c2b2b8cd.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/08/charred-pepper-steak-sauce/",
+        "cooking_time": 75,
+        "ingredients": "1  red bell pepper small was suggested i used a large and didnt regret it, 0.67 cup canned or fresh tomato pure, 0.25 cup orange juice, 2 tbsps worcestershire sauce, 2 tbsps olive oil, 1 tbsp balsamic vinegar, 1 tbsp molasses, 0.75 tsp table salt or more to taste, 1 tsp ground mustard, 0.5 tsp ground ginger, 0.25 tsp freshly ground black pepper, 0.25 tsp onion powder, 0.13 tsp ground allspice",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "red bell pepper small was suggested i used a large and didnt regret it, canned or fresh tomato pure, orange juice, worcestershire sauce, olive oil, balsamic vinegar, molasses, table salt or more to taste, ground mustard, ground ginger, freshly ground black pepper, onion powder, ground allspice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc946",
+        "title": "chicken noodle soup",
+        "image_url": "http://forkify-api.herokuapp.com/images/8068991908_b83ed736407295.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/10/chicken-noodle-soup/",
+        "cooking_time": 75,
+        "ingredients": "1 tbsp vegetable oil, 1  large onion chopped, 3 pounds chicken in parts or 3 pound chicken pieces of your choice, 8 cups water, 1  bay leaf, 2 tsps table salt, None  Freshly ground black pepper, 1  large carrot diced, 1  medium parsnip diced, 1  large celery stalk diced, 3 oz dried egg noodles i prefer wide ones, 1 tbsp chopped fresh dill or flat-leaf parsley",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "vegetable oil, large onion chopped, chicken in parts or pound chicken pieces of your choice, water, bay leaf, table salt, None  Freshly ground black pepper, large carrot diced, medium parsnip diced, large celery stalk diced, dried egg noodles i prefer wide ones, chopped fresh dill or flat-leaf parsley"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd100",
+        "title": "chocolate peanut butter cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/2749087215_17cd75a8cdf83a.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2008/08/chocolate-peanut-butter-cake/",
+        "cooking_time": 120,
+        "ingredients": "2 cups all-purpose flour, 2.5 cups sugar, 0.75 cup unsweetened cocoa powder preferably dutch process, 2 tsps baking soda, 1 tsp salt, 1 cup neutral vegetable oil such as canola soybean or vegetable blend, 1 cup sour cream, 1.5 cups water, 2 tbsps distilled white vinegar, 1 tsp vanilla extract, 2  eggs, 0.5 cup coarsely chopped peanut brittle, 10 oz cream cheese at room temperature, 1  stick unsalted butter at room temperature, 5 cups confectioners sugar sifted, 0.67 cup smooth peanut butter preferably a commercial brand, 8 oz semisweet chocolate coarsely chopped, 3 tbsps smooth peanut butter, 2 tbsps light corn syrup, 0.5 cup half-and-half",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "all-purpose flour, sugar, unsweetened cocoa powder preferably dutch process, baking soda, salt, neutral vegetable oil such as canola soybean or vegetable blend, sour cream, water, distilled white vinegar, vanilla extract, eggs, coarsely chopped peanut brittle, cream cheese at room temperature, stick unsalted butter at room temperature, confectioners sugar sifted, smooth peanut butter preferably a commercial brand, semisweet chocolate coarsely chopped, smooth peanut butter, light corn syrup, half-and-half"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcbfa",
+        "title": "cold rice noodles with peanut-lime chicken",
+        "image_url": "http://forkify-api.herokuapp.com/images/7403723994_a94a921dd6ef3f.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/06/cold-rice-noodles-with-peanut-lime-chicken/",
+        "cooking_time": 135,
+        "ingredients": "6 tbsps asian fish sauce, 6 tbsps brown sugar, 12 tbsps lime juice, 2  garlic cloves finely grated or minced, None  Small thai or serrano chiles thinly sliced to taste, 3 tbsps asian fish sauce, 3 tbsps rice vinegar, 9 tbsps lime juice, 3 tbsps soy sauce, 1  one-and-a-half inch chunk ginger peeled and sliced, 6 tbsps natural unsalted peanut butter, 1 tbsp toasted sesame oil, None  Pinch of cayenne, 1.25 pounds boneless skinless chicken thighs, 8 oz dried rice vermicelli or other rice noodles, 2  small cucumbers cut in 1/4-inch half moons, 2  medium carrots cut in thin julienne, None  Additional vegetables as suggested above, None  Small handful basil or mint or cilantro sprigs or your favorite of the three, 4  or more scallions slivered, 0.25 cup crushed or chopped roasted peanuts, None  Lime wedges",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "asian fish sauce, brown sugar, lime juice, garlic cloves finely grated or minced, None  Small thai or serrano chiles thinly sliced to taste, asian fish sauce, rice vinegar, lime juice, soy sauce, one-and-a-half inch chunk ginger peeled and sliced, natural unsalted peanut butter, toasted sesame oil, None  Pinch of cayenne, boneless skinless chicken thighs, dried rice vermicelli or other rice noodles, small cucumbers cut in 1/4-inch half moons, medium carrots cut in thin julienne, None  Additional vegetables as suggested above, None  Small handful basil or mint or cilantro sprigs or your favorite of the three, or more scallions slivered, crushed or chopped roasted peanuts, None  Lime wedges"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd09b",
+        "title": "cumin seed roasted cauliflower with yogurt",
+        "image_url": "http://forkify-api.herokuapp.com/images/6261628788_f8e74842b17a80.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2011/10/cumin-seed-roasted-cauliflower-with-yogurt/",
+        "cooking_time": 60,
+        "ingredients": "2 tbsps olive oil divided, 1  large head cauliflower, 1 tsp whole cumin seeds, 0.5 tsp kosher salt plus additional, 0.5 tsp freshly ground black pepper, None  Plain yogurt, 0.25 cup crumbled feta, None  Chopped fresh mint leaves for serving, None  Pomegranate seeds for serving",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "olive oil divided, large head cauliflower, whole cumin seeds, kosher salt plus additional, freshly ground black pepper, None  Plain yogurt, crumbled feta, None  Chopped fresh mint leaves for serving, None  Pomegranate seeds for serving"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bca0e",
+        "title": "fig, olive oil and sea salt challah + book tour!",
+        "image_url": "http://forkify-api.herokuapp.com/images/7973201316_efe80c0fb4074f.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/09/fig-olive-oil-and-sea-salt-challah-book-tour/",
+        "cooking_time": 75,
+        "ingredients": "2.25 tsps active dry yeast, 0.25 cup plus 1 tsp honey, 0.33 cup olive oil plus more for the bowl, 2  large eggs, 2 tsps flaky sea salt such as maldon or 1 1/2 tsps table salt, 4 cups all-purpose flour, 1 cup stemmed and roughly chopped dried figs, 0.13 tsp freshly grated orange zest or more as desired, 0.25 cup orange juice, 0.13 tsp sea salt, None  Few grinds black pepper, 1  large egg, None  Coarse or flaky sea salt for sprinkling",
+        "cuisine_type": "Lebanese",
+        "cleaned_ingredients": "active dry yeast, plus honey, olive oil plus more for the bowl, large eggs, flaky sea salt such as maldon or 1/table salt, all-purpose flour, stemmed and roughly chopped dried figs, freshly grated orange zest or more as desired, orange juice, sea salt, None  Few grinds black pepper, large egg, None  Coarse or flaky sea salt for sprinkling"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd6c",
+        "title": "grapefruit yogurt cake",
+        "image_url": "http://forkify-api.herokuapp.com/images/362520289_aa00e794e54ebd.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2007/01/cake-paradisi/",
+        "cooking_time": 75,
+        "ingredients": "1.5 cups all-purpose flour, 2 tsps baking powder, 0.5 tsp kosher salt, 1 cup plain whole-milk yogurt, 1 cup plus 1 tbsp sugar, 3  extra-large eggs, 1 tbsp grated grapefruit zest, 0.5 tsp pure vanilla extract, 0.5 cup vegetable oil, 0.33 cup freshly squeezed grapefruit juice, None  For the glaze:, 1 cup confectioners sugar, 2 tbsps freshly squeezed grapefruit juice",
+        "cuisine_type": "Spanish",
+        "cleaned_ingredients": "all-purpose flour, baking powder, kosher salt, plain whole-milk yogurt, plus sugar, extra-large eggs, grated grapefruit zest, pure vanilla extract, vegetable oil, freshly squeezed grapefruit juice, None  For the glaze:, confectioners sugar, freshly squeezed grapefruit juice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd70",
+        "title": "grilled lamb kebabs + tzatziki",
+        "image_url": "http://forkify-api.herokuapp.com/images/3915206543_4b2aa4cea74d1d.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2009/09/grilled-lamb-kebabs-tzatziki/",
+        "cooking_time": 105,
+        "ingredients": "1 pound plain yogurt, 0.25 cup olive oil plus more for brushing grill, 1 tsp lemon zest, 0.25 cup freshly squeezed lemon juice, 5 tbsps fresh whole rosemary leaves chopped, 1 tsp kosher salt, 0.5 tsp freshly ground black pepper, 2 pounds top round lamb, 1  red onion, 14 oz greek yogurt, 1  hothouse cucumber unpeeled and seeded, 0.25 cup sour cream, 2 tbsps freshly squeezed lemon juice, 1 tbsp white wine vinegar, 1 tbsp minced fresh dill, 1.5 tsps minced garlic, 2 tsps kosher salt, 0.5 tsp freshly ground black pepper",
+        "cuisine_type": "Italian",
+        "cleaned_ingredients": "pound plain yogurt, olive oil plus more for brushing grill, lemon zest, freshly squeezed lemon juice, fresh whole rosemary leaves chopped, kosher salt, freshly ground black pepper, top round lamb, red onion, greek yogurt, hothouse cucumber unpeeled and seeded, sour cream, freshly squeezed lemon juice, white wine vinegar, minced fresh dill, minced garlic, kosher salt, freshly ground black pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcdb1",
+        "title": "italian stuffed cabbage",
+        "image_url": "http://forkify-api.herokuapp.com/images/8483765195_e5621a4512479c.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2013/02/italian-stuffed-cabbage/",
+        "cooking_time": 60,
+        "ingredients": "1  large savoy cabbage, 7 oz hunk of bread crusts cut away torn into small scraps, 0.67 cup whole milk, 14 oz or approximately 4 plain pork sausages casings removed, 1  small sprig of sage finely chopped, 1  small sprig of rosemary finely chopped, 2 tbsps grated parmesan, None  Salt and freshly ground black pepper to taste, 1  28-oz can peeled plum tomatoes, 2 tbsps olive oil, 1  clove garlic peeled and minced",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "large savoy cabbage, hunk of bread crusts cut away torn into small scraps, whole milk, or approximately plain pork sausages casings removed, small sprig of sage finely chopped, small sprig of rosemary finely chopped, grated parmesan, None  Salt and freshly ground black pepper to taste, 28-oz can peeled plum tomatoes, olive oil, clove garlic peeled and minced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce9d",
+        "title": "lobster rolls",
+        "image_url": "http://forkify-api.herokuapp.com/images/3804108497_6b158e05a472e6.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2009/08/lobster-rolls/",
+        "cooking_time": 45,
+        "ingredients": "2 pounds cooked lobster meat* chopped roughly into 1/2 and 3/4-inch pieces, 1  small celery rib finely chopped, 0.25 cup mayonnaise, None  Squeeze or two of lemon juice, None  Pinch of kosher salt and freshly ground black pepper, 2  top-loading hot dog buns or 64 miniature burger buns or small dinner rolls, None  Unsalted butter, None  Snipped fresh chives for garnish",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "cooked lobster meat* chopped roughly into 1/and 3/4-inch pieces, small celery rib finely chopped, mayonnaise, None  Squeeze or two of lemon juice, None  Pinch of kosher salt and freshly ground black pepper, top-loading hot dog buns or miniature burger buns or small dinner rolls, None  Unsalted butter, None  Snipped fresh chives for garnish"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd040",
+        "title": "mediterranean baked feta with tomatoes",
+        "image_url": "http://forkify-api.herokuapp.com/images/7840702178_173884075ab83e.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/08/mediterranean-baked-feta-with-tomatoes/",
+        "cooking_time": 75,
+        "ingredients": "1 cup cherry tomatoes halved, 0.33 cup chopped pitted kalmata olives, 1  clove garlic minced, 0.25 cup thinly sliced red onion, 2 tbsps finely-chopped fresh flat-leaf parsley divided, 1 tsp dried oregano, 1 tsp olive oil, None  Freshly ground black pepper, 1  8- to 10-oz block feta, None  Crackers flatbread* pita chips or crostini for dipping",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "cherry tomatoes halved, chopped pitted kalmata olives, clove garlic minced, thinly sliced red onion, finely-chopped fresh flat-leaf parsley divided, dried oregano, olive oil, None  Freshly ground black pepper, 8- to 10-oz block feta, None  Crackers flatbread* pita chips or crostini for dipping"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf27",
+        "title": "olive's paella",
+        "image_url": "http://forkify-api.herokuapp.com/images/168620_MEDIUM8b30.jpg",
+        "publisher": "BBC Good Food",
+        "source_url": "http://www.bbcgoodfood.com/recipes/168620/olives-paella",
+        "cooking_time": 75,
+        "ingredients": "6  skinless chicken thigh fillets cut into large chunks, None  Olive oil, 250 g cooking chorizo sliced, 75 g cubetti di pancetta, 1  large onion halved and sliced, 2  garlic cloves sliced, 2  red peppers cut into pieces, 150 g green beans cut into pieces, 2 tsps smoked paprika, 500 g paella rice, 1 l chicken stock mixed with a large pinch of saffron, 300 g raw shell-on prawns, 1 g mussels cleaned, None  Flat-leaf parsley chopped to serve, None  Lemon wedges to serve",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "skinless chicken thigh fillets cut into large chunks, None  Olive oil, cooking chorizo sliced, cubetti di pancetta, large onion halved and sliced, garlic cloves sliced, red peppers cut into pieces, green beans cut into pieces, smoked paprika, paella rice, chicken stock mixed with a large pinch of saffron, raw shell-on prawns, mussels cleaned, None  Flat-leaf parsley chopped to serve, None  Lemon wedges to serve"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd0f7",
+        "title": "pear cranberry and gingersnap crumble",
+        "image_url": "http://forkify-api.herokuapp.com/images/6277593975_8db565c49a3d18.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2011/10/pear-cranberry-and-gingersnap-crumble/",
+        "cooking_time": 75,
+        "ingredients": "1 cup all-purpose flour, 0.25 cup granulated sugar, 3 tbsps packed dark or light brown sugar, 1 cup gingersnap crumbs, 0.13 tsp ground ginger, 0.13 tsp table salt, None  Pinch of white pepper especially if your gingersnaps arent particularly snappish, 0.5 cup unsalted butter melted and cooled, 2 pounds large ripe pears peeled halved cored and sliced 1/4 inch thick, 1.5 cups fresh cranberries, 1 tbsp lemon juice, 0.5 tsp finely grated lemon zest, 0.5 tsp vanilla extract, 0.5 cup granulated sugar, 2 tbsps cornstarch",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "all-purpose flour, granulated sugar, packed dark or light brown sugar, gingersnap crumbs, ground ginger, table salt, None  Pinch of white pepper especially if your gingersnaps arent particularly snappish, unsalted butter melted and cooled, large ripe pears peeled halved cored and sliced 1/inch thick, fresh cranberries, lemon juice, finely grated lemon zest, vanilla extract, granulated sugar, cornstarch"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf6f",
+        "title": "pumpkin cinnamon rolls",
+        "image_url": "http://forkify-api.herokuapp.com/images/8056778926_78fe9ec560d0d1.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/10/pumpkin-cinnamon-rolls/",
+        "cooking_time": 135,
+        "ingredients": "6 tbsps unsalted butter to be divided, 0.5 cup whole milk warmed, 2.25 tsps active dry yeast, 3.5 cups all-purpose flour plus extra for rolling out, 0.25 cup light or dark brown sugar, 0.25 cup granulated sugar, 1 tsp table salt, 0.5 tsp ground cinnamon, 0.25 tsp freshly grated nutmeg, 0.13 tsp ground cardamom, 0.25 tsp ground ginger, 0.67 cup pumpkin puree canned or, 1  large egg, None  Oil for coating rising bowl, 0.75 cup light or dark brown sugar, 0.25 cup granulated sugar, 0.13 tsp table salt, 2 tsps ground cinnamon, 4 oz cream cheese softened, 2 tbsps milk or buttermilk, 2 cups powdered sugar sifted, None  Few drops vanilla extract, 15  minutes before youre ready to bake them heat the oven to 350f. meanwhile you can make the glaze. beat your cream cheese until it is light and fluffy. add powdered sugar and vanilla. drizzle in milk until you get the consistency youre looking for either thick enough to ice or thin enough to drizzle.",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "unsalted butter to be divided, whole milk warmed, active dry yeast, all-purpose flour plus extra for rolling out, light or dark brown sugar, granulated sugar, table salt, ground cinnamon, freshly grated nutmeg, ground cardamom, ground ginger, pumpkin puree canned or, large egg, None  Oil for coating rising bowl, light or dark brown sugar, granulated sugar, table salt, ground cinnamon, cream cheese softened, milk or buttermilk, powdered sugar sifted, None  Few drops vanilla extract, minutes before youre ready to bake them heat the oven to 350f. meanwhile you can make the glaze. beat your cream cheese until it is light and fluffy. add powdered sugar and vanilla. drizzle in milk until you get the consistency youre looking for either thick enough to ice or thin enough to drizzle."
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcda7",
+        "title": "roasted pear and chocolate chunk scones",
+        "image_url": "http://forkify-api.herokuapp.com/images/8125277685_6f3125faec9e6b.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/10/roasted-pear-and-chocolate-chunk-scones/",
+        "cooking_time": 60,
+        "ingredients": "3  firmish pears, 1.5 cups all-purpose flour, 0.25 cup granulated sugar plus 1 1/2 tbsp granulated or coarse for sprinkling, 1.5 tsps baking powder, 0.5 tsp table salt plus additional for egg wash, 6 tbsps cold unsalted butter cut into small cubes, 0.25 cup heavy cream, 0.25 cup semisweet or bittersweet chocolate chopped, 2  large eggs 1 for dough 1 for glaze",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "firmish pears, all-purpose flour, granulated sugar plus 1/granulated or coarse for sprinkling, baking powder, table salt plus additional for egg wash, cold unsalted butter cut into small cubes, heavy cream, semisweet or bittersweet chocolate chopped, large eggs for dough for glaze"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf51",
+        "title": "roasted tomato soup with broiled cheddar",
+        "image_url": "http://forkify-api.herokuapp.com/images/6164877154_d9741c251c5a36.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2011/09/roasted-tomato-soup-with-broiled-cheddar/",
+        "cooking_time": 45,
+        "ingredients": "3 pounds plum tomatoes halved lengthwise, 2 tbsps olive oil, 2  large or 4 small cloves garlic unpeeled, 1 tsp finely chopped fresh thyme leaves or 1/4 teaspoon dried, 0.25 tsp dried crushed red pepper, 4 cups chicken or vegetable stock, 4  1-inch slices from a large loaf of rye bread whole wheat sourdough or bread of your choice toasted until hard and lightly buttered on one side, 1 tbsp grated raw onion, 1 cup coarsely grated cheddar",
+        "cuisine_type": "Caribbean",
+        "cleaned_ingredients": "plum tomatoes halved lengthwise, olive oil, large or small cloves garlic unpeeled, finely chopped fresh thyme leaves or 1/teaspoon dried, dried crushed red pepper, chicken or vegetable stock, 1-inch slices from a large loaf of rye bread whole wheat sourdough or bread of your choice toasted until hard and lightly buttered on one side, grated raw onion, coarsely grated cheddar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bceda",
+        "title": "spaghetti with broccoli cream pesto",
+        "image_url": "http://forkify-api.herokuapp.com/images/8047606795_57afb30c7076c3.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/10/spaghetti-with-broccoli-cream-pesto/",
+        "cooking_time": 60,
+        "ingredients": "0.5 pound broccoli, 0.5 pound dried spaghetti, 1 tbsp unsalted butter, 1 tbsp olive oil, 1  small onion finely chopped, 1  clove garlic minced, 0.5 tsp table salt, None  Freshly ground black pepper or pinches of red pepper flakes, 4 tbsps heavy cream, None  A heap of grated parmesan to serve",
+        "cuisine_type": "Scottish",
+        "cleaned_ingredients": "pound broccoli, pound dried spaghetti, unsalted butter, olive oil, small onion finely chopped, clove garlic minced, table salt, None  Freshly ground black pepper or pinches of red pepper flakes, heavy cream, None  A heap of grated parmesan to serve"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce94",
+        "title": "spinach and smashed egg toast",
+        "image_url": "http://forkify-api.herokuapp.com/images/8635118674_a8cd6d94b71f7d.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2013/04/spinach-and-smashed-egg-toast/",
+        "cooking_time": 45,
+        "ingredients": "1  large egg, 1  slice of your favorite hearty bread, 2 oz baby spinach, 1  pat butter, 1 tbsp minced shallot or white onion, 1 tbsp heavy cream, None  Sea salt and freshly ground black pepper, 1 tsp smooth dijon mustard, 1 tbsp crumbled cheese such as goat cheese or feta",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "large egg, slice of your favorite hearty bread, baby spinach, pat butter, minced shallot or white onion, heavy cream, None  Sea salt and freshly ground black pepper, smooth dijon mustard, crumbled cheese such as goat cheese or feta"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcb1e",
+        "title": "spinach salad with warm bacon vinaigrette",
+        "image_url": "http://forkify-api.herokuapp.com/images/8185356933_a35178eab24bbc.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/11/spinach-salad-with-warm-bacon-vinaigrette/",
+        "cooking_time": 60,
+        "ingredients": "4 oz baby spinach, 2  large white mushrooms thinly sliced, 1  small or medium red onion very thinly sliced, 1  large egg hard-boiled chilled peeled and thinly sliced, 4  pieces thick-sliced bacon finely diced, 2 tbsps red wine vinegar, 0.5 tsp honey or sugar, 0.5 tsp smooth dijon mustard, None  Coarse salt and freshly ground black pepper to taste",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "baby spinach, large white mushrooms thinly sliced, small or medium red onion very thinly sliced, large egg hard-boiled chilled peeled and thinly sliced, pieces thick-sliced bacon finely diced, red wine vinegar, honey or sugar, smooth dijon mustard, None  Coarse salt and freshly ground black pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfbd",
+        "title": "sweet potato (and marshmallow) biscuits",
+        "image_url": "http://forkify-api.herokuapp.com/images/6380938927_72dfcfb439a301.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2011/11/sweet-potato-and-marshmallow-biscuits/",
+        "cooking_time": 75,
+        "ingredients": "1 pound sweet potatoes, 0.33 cup buttermilk, 2 cups all-purpose flour, 1 tbsp baking powder, 3 tbsps granulated sugar, 1 tsp ground cinnamon, 0.25 tsp ground nutmeg, 0.25 tsp ground ginger, 0.13 tsp ground cloves, 0.5 tsp table salt, 5 tbsps unsalted butter cold, 1 cup miniature marshmallows",
+        "cuisine_type": "Hawaiian",
+        "cleaned_ingredients": "pound sweet potatoes, buttermilk, all-purpose flour, baking powder, granulated sugar, ground cinnamon, ground nutmeg, ground ginger, ground cloves, table salt, unsalted butter cold, miniature marshmallows"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bce55",
+        "title": "zucchini bread pancakes",
+        "image_url": "http://forkify-api.herokuapp.com/images/7647731244_03b2d030723e28.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/07/zucchini-bread-pancakes/",
+        "cooking_time": 60,
+        "ingredients": "2  large eggs, 3 tbsps olive oil, 2 tbsps light brown dark brown or granulated sugar, 0.25 cup buttermilk or 2 tbsp each of milk and plain yogurt whisked until smooth, 0.5 tsp vanilla extract, 2 cups shredded zucchini heaping cups are fine, 1 cup all-purpose flour, 0.25 tsp table salt, 1 tsp baking soda, 1 tsp ground cinnamon, 0.13 tsp ground or freshly grated nutmeg, None  Butter or oil for coating skillet",
+        "cuisine_type": "Chinese",
+        "cleaned_ingredients": "large eggs, olive oil, light brown dark brown or granulated sugar, buttermilk or each of milk and plain yogurt whisked until smooth, vanilla extract, shredded zucchini heaping cups are fine, all-purpose flour, table salt, baking soda, ground cinnamon, ground or freshly grated nutmeg, None  Butter or oil for coating skillet"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc8b2",
+        "title": "zucchini rice gratin",
+        "image_url": "http://forkify-api.herokuapp.com/images/7686508332_eaf3597440b9f4.jpg",
+        "publisher": "Smitten Kitchen",
+        "source_url": "http://smittenkitchen.com/blog/2012/07/zucchini-rice-gratin/",
+        "cooking_time": 60,
+        "ingredients": "0.33 cup uncooked white rice long-grain is suggested but use whatever you prefer, 5 tbsps olive oil, 1.5 pounds zucchini sliced 1/4-inch thick, 0.5 pound plum tomatoes sliced 1/4-inch thick, None  Table salt and freshly ground black pepper, 1  medium onion halved lengthwise and thinly sliced, 3  garlic cloves minced, 2  large eggs lightly beaten, 1 tsp chopped fresh thyme leaves, 0.5 cup grated parmesan divided",
+        "cuisine_type": "Irish",
+        "cleaned_ingredients": "uncooked white rice long-grain is suggested but use whatever you prefer, olive oil, zucchini sliced 1/4-inch thick, pound plum tomatoes sliced 1/4-inch thick, None  Table salt and freshly ground black pepper, medium onion halved lengthwise and thinly sliced, garlic cloves minced, large eggs lightly beaten, chopped fresh thyme leaves, grated parmesan divided"
     }
+]
 
-        ingredients = [
-        ["mixed frozen berries", "natural yoghurt", "runny honey", "fresh mint"],
-        ["coconut milk", "curry powder", "chicken breast", "garlic", "onion", "olive oil"],
-        ["ground beef", "onion", "garlic", "canned tomatoes", "spaghetti pasta", "olive oil", "salt", "black pepper", "dried oregano"],
-        ["mango", "red onion", "jalapeño pepper", "cilantro", "lime juice", "salt"],
-        ["baguette", "butter", "garlic", "mozzarella cheese", "parsley"],
-        ["cucumber", "tomato", "red onion", "kalamata olives", "feta cheese", "olive oil", "lemon juice", "dried oregano", "salt", "black pepper"],
-        ["ground turkey", "bell peppers", "rice", "onion", "garlic", "tomato sauce", "mozzarella cheese", "salt", "black pepper"],
-        ["salmon fillets", "soy sauce", "brown sugar", "garlic", "ginger", "sesame oil", "green onions"],
-        ["tomatoes", "fresh mozzarella cheese", "fresh basil leaves", "balsamic vinegar", "olive oil", "salt", "black pepper"],
-        ["broccoli", "bell peppers", "carrots", "snap peas", "onion", "garlic", "ginger", "soy sauce", "sesame oil", "rice vinegar"],
-        ["flour", "baking powder", "salt", "milk", "eggs", "butter", "blueberries", "maple syrup"],
-        ["chicken breast", "fettuccine pasta", "heavy cream", "Parmesan cheese", "garlic", "butter", "salt", "black pepper", "parsley"],
-        ["pineapple", "mango", "kiwi", "strawberries", "honey", "lime juice", "mint leaves"],
-        ["chicken breasts", "spinach", "feta cheese", "garlic", "olive oil", "salt", "black pepper"],
-        ["shrimp", "bell peppers", "onion", "celery", "garlic", "rice", "chicken broth", "Cajun seasoning", "salt", "black pepper"],
-        ["flour", "butter", "sugar", "egg", "vanilla extract", "chocolate chips", "baking soda", "salt"],
-        ["bread", "butter", "cheese"],
-        ["romaine lettuce", "chicken breast", "Caesar dressing", "Parmesan cheese", "croutons"],
-        ["ground beef", "taco seasoning", "tortillas", "lettuce", "tomato", "cheese", "salsa"],
-        ["pumpkin", "onion", "garlic", "vegetable broth", "coconut milk", "nutmeg", "cinnamon", "salt", "black pepper"],
-        ["apples", "sugar", "cinnamon", "flour", "butter", "pie crust"],
-        ["lasagna noodles", "ground beef", "ricotta cheese", "mozzarella cheese", "parmesan cheese", "tomato sauce", "onion", "garlic", "olive oil", "salt", "black pepper"],
-        ["chicken breast", "tomato sauce", "coconut milk", "garam masala", "garlic", "ginger", "onion", "chili powder", "salt", "black pepper"],
-        ["avocado", "tomato", "onion", "lime juice", "cilantro", "salt", "black pepper"],
-        ["bread", "eggs", "milk", "vanilla extract", "cinnamon", "butter", "maple syrup"],
-        ["arborio rice", "mushrooms", "chicken broth", "white wine", "onion", "garlic", "parmesan cheese", "butter", "salt", "black pepper"],
-        ["beef sirloin", "onion", "mushrooms", "beef broth", "sour cream", "flour", "butter", "salt", "black pepper"],
-        ["tomatoes", "garlic", "basil", "olive oil", "balsamic vinegar", "salt", "black pepper", "baguette"],
-        ["chicken wings", "baking powder", "salt", "black pepper", "garlic powder", "paprika", "hot sauce", "butter"],
-        ["eggplant", "tomatoes", "zucchini", "bell peppers", "onion", "garlic", "tomato sauce", "olive oil", "basil", "oregano", "salt", "black pepper"],
-        ["salmon fillets", "honey", "dijon mustard", "lemon juice", "garlic", "salt", "black pepper"],
-        ["shrimp", "linguine pasta", "garlic", "butter", "lemon juice", "white wine", "parsley", "red pepper flakes", "salt", "black pepper"],
-        ["lasagna noodles", "zucchini", "yellow squash", "mushrooms", "ricotta cheese", "mozzarella cheese", "parmesan cheese", "tomato sauce", "onion", "garlic", "olive oil", "salt", "black pepper"],
-        ["rice noodles", "bell peppers", "carrots", "snap peas", "garlic", "ginger", "soy sauce", "sriracha", "brown sugar", "lime juice", "cilantro", "salt", "black pepper"],
-        ["chicken", "lemon", "garlic", "thyme", "rosemary", "butter", "salt", "black pepper"],
-        ["beef sirloin", "broccoli", "bell peppers", "onion", "garlic", "ginger", "soy sauce", "brown sugar", "sesame oil", "cornstarch", "rice vinegar", "salt", "black pepper"],
-        ["chocolate", "butter", "sugar", "eggs", "vanilla extract", "flour", "salt"],
-        ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
-        , ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
-    ]
+# Convert ingredient lists into numerical vectors for cosine similarity with scikit-learn
+vectorizer = CountVectorizer(binary=True)
+all_ingredients = [recipe["cleaned_ingredients"] for recipe in all_recipes]
+X_all = vectorizer.fit_transform(all_ingredients)
+favorite_ingredients = [recipe["cleaned_ingredients"] for recipe in favorite_recipes]
+X_favorites = vectorizer.transform(favorite_ingredients)
 
-        # Instantiate the RecipeRecommendation class
-        recipe_recommendation = RecipeRecommendation(recipes, recipe_cuisines, ingredients)
+# Compute cosine similarity with scikit-learn
+cosine_similarities_sklearn = cosine_similarity(X_favorites, X_all)
 
-        # Example usage:
-        favorite_recipe_indices = [recipes.index("Eggplant Parmesan"), recipes.index("Grilled Cheese Sandwich")]
+# Convert ingredients to tensors for cosine similarity with PyTorch
+favorite_tensors = []
+all_tensors = []
+for recipe in favorite_recipes:
+    ingredients = recipe["cleaned_ingredients"].split()
+    favorite_tensors.append(torch.tensor([1 if ingredient in ingredients else 0 for ingredient in all_ingredients], dtype=torch.float32))
+for recipe in all_recipes:
+    ingredients = recipe["cleaned_ingredients"].split()
+    all_tensors.append(torch.tensor([1 if ingredient in ingredients else 0 for ingredient in all_ingredients], dtype=torch.float32))
 
-        self.stdout.write("Recommendations Based on Ingredient Similarity:")
-        similar_recipes_by_ingredients = recipe_recommendation.find_similar_recipes_by_ingredients(favorite_recipe_indices)
-        for recipe, similarity in similar_recipes_by_ingredients:
-            self.stdout.write(f"{recipe}: Similarity Score = {similarity:.4f}")
+# Stack tensors
+favorite_tensor = torch.stack(favorite_tensors)
+all_tensor = torch.stack(all_tensors)
 
-        self.stdout.write("\nRecommendations Based on Cuisine Type Similarity:")
-        similar_recipes_by_cuisine = recipe_recommendation.find_similar_recipes_by_cuisine(favorite_recipe_indices)
-        for recipe, similarity in similar_recipes_by_cuisine:
-            self.stdout.write(f"{recipe}: Similarity Score = {similarity:.4f}")
+# Normalize tensors
+favorite_norm = F.normalize(favorite_tensor, p=2, dim=1)
+all_norm = F.normalize(all_tensor, p=2, dim=1)
+
+# Compute cosine similarity with PyTorch
+cos_sim_pytorch = torch.mm(favorite_norm, all_norm.t())
+
+# Compute Jaccard similarity
+def jaccard_similarity(set1, set2):
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return intersection / union if union else 0
+
+jaccard_similarities = []
+for fav_recipe in favorite_recipes:
+    fav_ingredients_set = set(fav_recipe["cleaned_ingredients"].split())
+    similarity_scores = []
+    for recipe in all_recipes:
+        recipe_ingredients_set = set(recipe["cleaned_ingredients"].split())
+        similarity = jaccard_similarity(fav_ingredients_set, recipe_ingredients_set)
+        similarity_scores.append(similarity)
+    jaccard_similarities.append(similarity_scores)
+
+# Find top 10 similarity scores for each method
+top_10_jaccard = sorted(enumerate(jaccard_similarities[0]), key=lambda x: x[1], reverse=True)[:10]
+top_10_cosine_sklearn = sorted(enumerate(cosine_similarities_sklearn[0]), key=lambda x: x[1], reverse=True)[:10]
+top_10_cosine_pytorch = sorted(enumerate(cos_sim_pytorch[0]), key=lambda x: x[1], reverse=True)[:10]
+
+# Print top 10 similarity scores for each method
+print("Top 10 Jaccard Similarity:")
+for index, score in top_10_jaccard:
+    recipe_id = all_recipes[index]["recipe_id"]
+    recipe_title = all_recipes[index]["title"]
+    print(f"{recipe_title} ({recipe_id}): {score}")
+
+print("\nTop 10 Cosine Similarity (scikit-learn):")
+for index, score in top_10_cosine_sklearn:
+    recipe_id = all_recipes[index]["recipe_id"]
+    recipe_title = all_recipes[index]["title"]
+    print(f"{recipe_title} ({recipe_id}): {score}")
+
