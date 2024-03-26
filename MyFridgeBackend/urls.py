@@ -33,6 +33,7 @@ urlpatterns = [
     path('', include(router.urls)), 
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     path('recipes/', views.getRecipe, name ='get_recipe'),
+    path('ingredient/', views.getIngredients, name ='get_ingredient'),
     path('recipes/search/', views.searchRecipe, name='search_recipe'),
     path('detect/', detectIngredients, name='Detect Ingredients')
 ]

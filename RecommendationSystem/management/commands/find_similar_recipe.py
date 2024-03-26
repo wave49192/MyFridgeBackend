@@ -1,191 +1,209 @@
 from django.core.management.base import BaseCommand
 from RecommendationSystem.models import Recipe
-import torch
-import torch.nn.functional as F
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-class RecipeRecommendation:
-    def __init__(self, recipes, recipe_cuisines, ingredients):
-        self.recipes = recipes
-        self.recipe_cuisines = recipe_cuisines
-        self.ingredients = ingredients
-        self.ingredient_vocab = {ingredient: i for i, ingredient in enumerate(set([ingredient for recipe in ingredients for ingredient in recipe]))}
-        self.recipe_vectors = torch.stack([self.recipe_to_onehot(recipe) for recipe in recipes])
+class RecommendationSystem:
+    
+    """
+    The similarity score are high in the recipe that has a lot of ingredient and low in little ingredient, will fix later.
+    The time complexity is high and can not be improved as it needs to do a nested loop in order to compare every word in the list 
+    So I will find another way to improve the time complexity by using another algorithm.
+    
+    -----------UPDATE-------------
+    TF-IDF Vectorization then cosine similarity. works fine on many favourite recipe.
+    -----------UPDATE-------------
+    
+    Algorithm tried:
+    1 Nltk distance (The Levenshtein distance between two strings: more distance = less alike).
+    2 TF-IDF Vectorization then cosine similarity. (will use this one)
+    """
+    @staticmethod
+    def recommend_similar_recipes(favorite_recipes):
+        recipes_queryset = Recipe.objects.all()
+        recipes = [
+            {
+                'recipe_id': recipe.recipe_id,
+                'title': recipe.title,
+                'cuisine_type': recipe.cuisine_type,
+                'cleaned_ingredients': recipe.cleaned_ingredients
+            }
+            for recipe in recipes_queryset
+        ]
+        
+        # Extracting favorite ingredients and ingredients for each recipe
+        favorite_ingredients = [ingredient.strip() for favorite_recipe in favorite_recipes for ingredient in favorite_recipe['cleaned_ingredients'].split(',')]
+        recipe_ingredients = [recipe['cleaned_ingredients'] for recipe in recipes]
+        
+        # Create TF-IDF vectors
+        tfidf_vectorizer = TfidfVectorizer()
+        tfidf_matrix = tfidf_vectorizer.fit_transform(recipe_ingredients + [' '.join(favorite_ingredients)])
+        
+        # Calculate cosine similarity between user's favorite ingredients and recipes
+        similarity_scores = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[:-1])
+        
+        # Associate similarity scores with recipes
+        recipe_similarity_scores = {recipes[i]['recipe_id']: similarity_scores[0][i] for i in range(len(recipes))}
+        
+        # Exclude favorite recipes from recommendations by setting their scores to 0
+        for favorite_recipe in favorite_recipes:
+            recipe_id = favorite_recipe['recipe_id']
+            if recipe_id in recipe_similarity_scores:
+                recipe_similarity_scores[recipe_id] = 0
 
-    def recipe_to_onehot(self, recipe_name):
-        onehot_ingredient = torch.zeros(len(self.ingredient_vocab))
-        for ingredient in self.ingredients[self.recipes.index(recipe_name)]:
-            index = self.ingredient_vocab[ingredient]
-            onehot_ingredient[index] = 1
         
-        onehot_cuisine = torch.zeros(len(set(self.recipe_cuisines.values())))
-        index = list(set(self.recipe_cuisines.values())).index(self.recipe_cuisines[recipe_name])
-        onehot_cuisine[index] = 1
-        
-        return torch.cat((onehot_ingredient, onehot_cuisine))
+        # Sort recipes based on similarity score
+        sorted_recipes = sorted(recipes, key=lambda x: recipe_similarity_scores[x['recipe_id']], reverse=True)
 
-    def find_similar_recipes_by_ingredients(self, favorite_recipe_indices, top_n=5):
-        avg_recipe_vector = torch.mean(torch.stack([self.recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
-        similarity_scores = F.cosine_similarity(self.recipe_vectors[:, :-len(set(self.recipe_cuisines.values()))], avg_recipe_vector[:-len(set(self.recipe_cuisines.values()))].unsqueeze(0))
-        
-        # Exclude favorite recipes from recommendations
-        for index in favorite_recipe_indices:
-            similarity_scores[index] = -1  # Set similarity score to -1 for favorite recipes
-        
-        top_indices = similarity_scores.argsort(descending=True)[:top_n]
-        return [(self.recipes[i], similarity_scores[i].item()) for i in top_indices]
-
-    def find_similar_recipes_by_cuisine(self, favorite_recipe_indices, top_n=5):
-        avg_recipe_vector = torch.mean(torch.stack([self.recipe_vectors[i] for i in favorite_recipe_indices]), dim=0)
-        similarity_scores = F.cosine_similarity(self.recipe_vectors[:, -len(set(self.recipe_cuisines.values())):], avg_recipe_vector[-len(set(self.recipe_cuisines.values())):].unsqueeze(0))
-        
-        # Exclude favorite recipes from recommendations
-        for index in favorite_recipe_indices:
-            similarity_scores[index] = -1  # Set similarity score to -1 for favorite recipes
-        
-        top_indices = similarity_scores.argsort(descending=True)[:top_n]
-        return [(self.recipes[i], similarity_scores[i].item()) for i in top_indices]
+        # Print recommended recipes
+        print("Top 10 similar recipes:")
+        for i, recipe in enumerate(sorted_recipes[:50], 1):
+            print(f"{i}. {recipe['title']} (similarity score: {recipe_similarity_scores[recipe['recipe_id']]:.4f})")
 
 class Command(BaseCommand):
-    help = 'Recommend recipes based on similarity'
+    help = 'Recommend similar recipes based on a favorite recipe'
 
-    def handle(self, *args, **options):
-    #this is a mock recipe and ingredients
-        recipes = [
-        "Berry Blast Smoothie",
-        "Coconut Curry Chicken",
-        "Classic Spaghetti Bolognese",
-        "Mango Tango Salsa",
-        "Cheesy Garlic Bread",
-        "Greek Salad",
-        "Stuffed Bell Peppers",
-        "Teriyaki Salmon",
-        "Caprese Salad",
-        "Vegetable Stir Fry",
-        "Blueberry Pancakes",
-        "Chicken Alfredo Pasta",
-        "Tropical Fruit Salad",
-        "Spinach and Feta Stuffed Chicken Breasts",
-        "Cajun Shrimp and Rice",
-        "Chocolate Chip Cookies",
-        "Grilled Cheese Sandwich",
-        "Chicken Caesar Salad",
-        "Beef Tacos",
-        "Pumpkin Soup",
-        "Apple Pie",
-        "Lasagna",
-        "Chicken Tikka Masala",
-        "Guacamole",
-        "French Toast",
-        "Creamy Mushroom Risotto",
-        "Beef Stroganoff",
-        "Tomato Basil Bruschetta",
-        "Crispy Baked Chicken Wings",
-        "Ratatouille",
-        "Honey Mustard Glazed Salmon",
-        "Shrimp Scampi",
-        "Vegetable Lasagna",
-        "Spicy Thai Noodles",
-        "Lemon Garlic Roast Chicken",
-        "Beef and Broccoli Stir Fry",
-        "Chocolate Lava Cake",
-        "Eggplant Parmesan"
-    ]
-        recipe_cuisines = {
-        "Berry Blast Smoothie": "Smoothie",
-        "Coconut Curry Chicken": "Indian",
-        "Classic Spaghetti Bolognese": "Italian",
-        "Mango Tango Salsa": "Mexican",
-        "Cheesy Garlic Bread": "Italian",
-        "Greek Salad": "Greek",
-        "Stuffed Bell Peppers": "Mexican",
-        "Teriyaki Salmon": "Japanese",
-        "Caprese Salad": "Italian",
-        "Vegetable Stir Fry": "Chinese",
-        "Blueberry Pancakes": "American",
-        "Chicken Alfredo Pasta": "Italian",
-        "Tropical Fruit Salad": "American",
-        "Spinach and Feta Stuffed Chicken Breasts": "Mediterranean",
-        "Cajun Shrimp and Rice": "Cajun",
-        "Chocolate Chip Cookies": "American",
-        "Grilled Cheese Sandwich": "American",
-        "Chicken Caesar Salad": "American",
-        "Beef Tacos": "Mexican",
-        "Pumpkin Soup": "American",
-        "Apple Pie": "American",
-        "Lasagna": "Italian",
-        "Chicken Tikka Masala": "Indian",
-        "Guacamole": "Mexican",
-        "French Toast": "American",
-        "Creamy Mushroom Risotto": "Italian",
-        "Beef Stroganoff": "Russian",
-        "Tomato Basil Bruschetta": "Italian",
-        "Crispy Baked Chicken Wings": "American",
-        "Ratatouille": "French",
-        "Honey Mustard Glazed Salmon": "American",
-        "Shrimp Scampi": "Italian",
-        "Vegetable Lasagna": "Italian",
-        "Spicy Thai Noodles": "Thai",
-        "Lemon Garlic Roast Chicken": "Mediterranean",
-        "Beef and Broccoli Stir Fry": "Chinese",
-        "Chocolate Lava Cake": "American",
-        "Eggplant Parmesan": "Italian"
-        ,"Dog Food":"Dog",
+    def handle(self, *args, **kwargs):
+        favorite_recipe = [
+    {
+        "recipe_id": "5ed6604591c37cdc054bca02",
+        "title": "Crusty cheddar pies",
+        "cuisine_type": "Cuban",
+        "cleaned_ingredients": "slim young leeks thickly sliced, broccoli cut into small florets, celery sticks de-stringed and sliced, floury potatoes such as king edward cut into even-sized chunks, butter, pot 0% fat greek yogurt, ml semi-skimmed milk, plain flour, english mustard, wholegrain mustard, pack mature cheddar finely grated, None  Handful frozen peas"
     }
+            ,      {
+        "recipe_id": "5ed6604591c37cdc054bcaa7",
+        "title": "Cucumber and Feta Rolls",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "crumbled feta crumbled, greek yogurt, sundried tomatoes chopped, kalamata olives chopped, roasted red peppers chopped, oregano or dill chopped, lemon juice, None  Pepper to taste, cucumbers sliced thinly lengthwise"
+    },
+             {
+        "recipe_id": "5ed6604591c37cdc054bc878",
+        "title": "Deep-Dish Winter Fruit Pie with Walnut Crumb",
+        "cuisine_type": "Korean",
+        "cleaned_ingredients": "all-purpose flour, granulated sugar, fine sea salt, cold unsalted butter cut into 1/2-inch cubes, ice water, freshly squeezed lemon juice, all-purpose flour, packed brown sugar, raw walnuts coarsely chopped, ground cinnamon, fine sea salt, unsalted butter melted, dried figs, small apples peeled cored and sliced 1/inch thick, pears peeled cored and sliced 1/inch thick, cranberries fresh or frozen, granulated sugar, cornstarch"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc898",
+        "title": "Delicious Ham and Potato Soup",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "peeled and diced potatoes, diced celery, finely chopped onion, diced cooked ham, water, chicken bouillon granules, salt or to taste, ground white or black pepper or to taste, butter, all-purpose flour, milk"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcc60",
+        "title": "Delicious Hot Chocolate",
+        "cuisine_type": "Filipino",
+        "cleaned_ingredients": "milk, half-and-half, good semi sweet chocolate chips, sugar, None  Variations: orange rind orange syrup cinnamon sticks raspberry syrup abuelita chocolate mint extract peppermint patties whipped cream chocolate shavings"
+    },
+    {
+        "recipe_id": "5ed6604691c37cdc054bd01b",
+        "title": "Devilled tofu kebabs",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "shallots or button onions, small new potatoes, tomato pure, light soy sauce, sunflower oil, clear honey, wholegrain mustard, firm smoked tofu cubed, courgette peeled and sliced, red pepper deseeded and diced"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf56",
+        "title": "Donut Chips",
+        "cuisine_type": "Brazilian",
+        "cleaned_ingredients": "soft glazed donut holes, cinnamon sugar"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc899",
+        "title": "Donut Muffins",
+        "cuisine_type": "Turkish",
+        "cleaned_ingredients": "white sugar, margarine melted, ground nutmeg, milk, baking powder, all-purpose flour, margarine melted, white sugar, ground cinnamon"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc97e",
+        "title": "Donut Muffins Recipe",
+        "cuisine_type": "Vietnamese",
+        "cleaned_ingredients": "granulated sugar, ground cinnamon, unsalted butter melted, all-purpose flour plus more for coating the pan, baking powder, fine salt, freshly ground nutmeg, baking soda, whole milk at room temperature, buttermilk at room temperature, unsalted butter at room temperature, plus granulated sugar, large eggs at room temperature"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd2c",
+        "title": "Double Broccoli Quinoa",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "cooked quinoa*, raw broccoli cut into small florets and stems, medium garlic cloves, sliced or slivered almonds toasted, freshly grated parmesan, big pinches salt, fresh lemon juice, olive oil, heavy cream, None  Optional toppings: slivered basil fire oil ** sliced avocado, None  Crumbled feta or goat cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc89a",
+        "title": "Double Crust Stuffed Pizza",
+        "cuisine_type": "Moroccan",
+        "cleaned_ingredients": "white sugar, warm water, active dry yeast, olive oil, salt, all-purpose flour, can crushed tomatoes, packed brown sugar, garlic powder, olive oil, salt, shredded mozzarella cheese divided, pound bulk italian sausage, package sliced pepperoni, package sliced fresh mushrooms, green bell pepper chopped, red bell pepper chopped"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc89b",
+        "title": "Double Tomato Bruschetta",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "roma tomatoes chopped, sun-dried tomatoes packed in oil, cloves minced garlic, olive oil, balsamic vinegar, fresh basil stems removed, salt, ground black pepper, french baguette, shredded mozzarella cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd93",
+        "title": "Doughnuts with Grapefruit-Vanilla Jelly",
+        "cuisine_type": "Japanese",
+        "cleaned_ingredients": "sugar, fresh grapefruit juice, liquid pectin, vanilla bean split lengthwise, olive oil plus more for bowl, apple juice, 1/4-oz envelope active dry yeast, all-purpose flour plus more, plus sugar, large eggs, finely grated grapefruit zest, kosher salt, None  Vegetable oil"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc8fd",
+        "title": "Hummus Pizza",
+        "cuisine_type": "Greek",
+        "cleaned_ingredients": "can refrigerated pizza crust dough, hummus spread, sliced bell peppers any color, broccoli florets, shredded monterey jack cheese"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc92f",
+        "title": "Dr. Pepper Barbecue Sauce",
+        "cuisine_type": "Mexican",
+        "cleaned_ingredients": "unsalted butter, large yellow onion chopped, cloves garlic chopped, ketchup, tomato paste, None  One 12-oz can dr. pepper, cider vinegar, worcestershire sauce, packed dark brown sugar, ancho or new mexican chili powder, fine-ground white pepper, kosher salt"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bceaf",
+        "title": "Drunken Watermelon Pops Recipe",
+        "cuisine_type": "Russian",
+        "cleaned_ingredients": "vodka, chambord or other raspberry-flavored liqueur, vanilla bean split lengthwise and scraped seeds reserved, seedless watermelon peeled and cut into large dice"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bc97c",
+        "title": "Duck  l'Orange",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "pekin duck, yellow onion coarsely chopped, sprigs thyme, celery stalk coarsely chopped, medium carrot peeled halved lengthwise then crosswise, whole black peppercorns, navel oranges, None  Kosher salt freshly ground pepper, port"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf35",
+        "title": "Duck Confit Fried Spring Rolls Recipe",
+        "cuisine_type": "Argentinian",
+        "cleaned_ingredients": "hoisin sauce, plum sauce, rice vinegar, soy sauce, None  Freshly ground black pepper, duck confit legs, quarts vegetable oil, cremini mushrooms stems trimmed and thinly sliced, None  Kosher salt, None  Freshly ground black pepper, medium carrot peeled and cut into matchsticks, medium yellow onion thinly sliced, five-spice powder, sliced water chestnuts thinly sliced into matchsticks, finely chopped fresh cilantro, round rice paper wrappers"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcf41",
+        "title": "Duck Confit Salad with Cranberry Vinaigrette",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "mixed salad greens, shredded duck confit, ripe avocado, pomegranate, tb. cranberry preserves, tb. apple cider vinegar, olive oil, None  Salt and pepper"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaa8",
+        "title": "Duck Quesadillas with Chipotle Cherry Salsa and Goat Cheese",
+        "cuisine_type": "German",
+        "cleaned_ingredients": "butter, chipotle pan seared duck breast sliced into small pieces, chipotle cherry salsa, green onion sliced, cilantro chopped, handful jack cheese grated, goat cheese room temperature, tortillas"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcaa9",
+        "title": "Duck Tacos with Chipotle Cherry Salsa and Goat Cheese",
+        "cuisine_type": "Mediterranean",
+        "cleaned_ingredients": "pound duck breast, chipotle chili powder, cumin toasted and ground, salt to taste, chipotle cherry salsa, small corn tortillas lightly toasted, red cabbage thinly sliced and tossed in sour cream, goat cheese crumbed, None  Cress sprouts for garnish, cherries pitted, chipotle chili in adobo or to taste chopped, red onion diced, small clove garlic grated, handful basil, balsamic vinegar, None  Salt and pepper to taste"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcd64",
+        "title": "Duck a l",
+        "cuisine_type": "American",
+        "cleaned_ingredients": "pekin duck, yellow onion coarsely chopped, sprigs thyme, celery stalk coarsely chopped, medium carrot peeled halved lengthwise then crosswise, whole black peppercorns, navel oranges, None  Kosher salt freshly ground pepper, port"
+    },
+    {
+        "recipe_id": "5ed6604591c37cdc054bcfb6",
+        "title": "Duck stir-fry with ginger & greens",
+        "cuisine_type": "Peruvian",
+        "cleaned_ingredients": "None  Groundnut oil, skinless duck breasts cut into thin strips, finely chopped ginger, red chilli sliced, spring onions sliced, pak choi sliced, soy sauce, honey, oyster sauce, cornflour"
+    },
+        ]
 
-        ingredients = [
-        ["mixed frozen berries", "natural yoghurt", "runny honey", "fresh mint"],
-        ["coconut milk", "curry powder", "chicken breast", "garlic", "onion", "olive oil"],
-        ["ground beef", "onion", "garlic", "canned tomatoes", "spaghetti pasta", "olive oil", "salt", "black pepper", "dried oregano"],
-        ["mango", "red onion", "jalapeño pepper", "cilantro", "lime juice", "salt"],
-        ["baguette", "butter", "garlic", "mozzarella cheese", "parsley"],
-        ["cucumber", "tomato", "red onion", "kalamata olives", "feta cheese", "olive oil", "lemon juice", "dried oregano", "salt", "black pepper"],
-        ["ground turkey", "bell peppers", "rice", "onion", "garlic", "tomato sauce", "mozzarella cheese", "salt", "black pepper"],
-        ["salmon fillets", "soy sauce", "brown sugar", "garlic", "ginger", "sesame oil", "green onions"],
-        ["tomatoes", "fresh mozzarella cheese", "fresh basil leaves", "balsamic vinegar", "olive oil", "salt", "black pepper"],
-        ["broccoli", "bell peppers", "carrots", "snap peas", "onion", "garlic", "ginger", "soy sauce", "sesame oil", "rice vinegar"],
-        ["flour", "baking powder", "salt", "milk", "eggs", "butter", "blueberries", "maple syrup"],
-        ["chicken breast", "fettuccine pasta", "heavy cream", "Parmesan cheese", "garlic", "butter", "salt", "black pepper", "parsley"],
-        ["pineapple", "mango", "kiwi", "strawberries", "honey", "lime juice", "mint leaves"],
-        ["chicken breasts", "spinach", "feta cheese", "garlic", "olive oil", "salt", "black pepper"],
-        ["shrimp", "bell peppers", "onion", "celery", "garlic", "rice", "chicken broth", "Cajun seasoning", "salt", "black pepper"],
-        ["flour", "butter", "sugar", "egg", "vanilla extract", "chocolate chips", "baking soda", "salt"],
-        ["bread", "butter", "cheese"],
-        ["romaine lettuce", "chicken breast", "Caesar dressing", "Parmesan cheese", "croutons"],
-        ["ground beef", "taco seasoning", "tortillas", "lettuce", "tomato", "cheese", "salsa"],
-        ["pumpkin", "onion", "garlic", "vegetable broth", "coconut milk", "nutmeg", "cinnamon", "salt", "black pepper"],
-        ["apples", "sugar", "cinnamon", "flour", "butter", "pie crust"],
-        ["lasagna noodles", "ground beef", "ricotta cheese", "mozzarella cheese", "parmesan cheese", "tomato sauce", "onion", "garlic", "olive oil", "salt", "black pepper"],
-        ["chicken breast", "tomato sauce", "coconut milk", "garam masala", "garlic", "ginger", "onion", "chili powder", "salt", "black pepper"],
-        ["avocado", "tomato", "onion", "lime juice", "cilantro", "salt", "black pepper"],
-        ["bread", "eggs", "milk", "vanilla extract", "cinnamon", "butter", "maple syrup"],
-        ["arborio rice", "mushrooms", "chicken broth", "white wine", "onion", "garlic", "parmesan cheese", "butter", "salt", "black pepper"],
-        ["beef sirloin", "onion", "mushrooms", "beef broth", "sour cream", "flour", "butter", "salt", "black pepper"],
-        ["tomatoes", "garlic", "basil", "olive oil", "balsamic vinegar", "salt", "black pepper", "baguette"],
-        ["chicken wings", "baking powder", "salt", "black pepper", "garlic powder", "paprika", "hot sauce", "butter"],
-        ["eggplant", "tomatoes", "zucchini", "bell peppers", "onion", "garlic", "tomato sauce", "olive oil", "basil", "oregano", "salt", "black pepper"],
-        ["salmon fillets", "honey", "dijon mustard", "lemon juice", "garlic", "salt", "black pepper"],
-        ["shrimp", "linguine pasta", "garlic", "butter", "lemon juice", "white wine", "parsley", "red pepper flakes", "salt", "black pepper"],
-        ["lasagna noodles", "zucchini", "yellow squash", "mushrooms", "ricotta cheese", "mozzarella cheese", "parmesan cheese", "tomato sauce", "onion", "garlic", "olive oil", "salt", "black pepper"],
-        ["rice noodles", "bell peppers", "carrots", "snap peas", "garlic", "ginger", "soy sauce", "sriracha", "brown sugar", "lime juice", "cilantro", "salt", "black pepper"],
-        ["chicken", "lemon", "garlic", "thyme", "rosemary", "butter", "salt", "black pepper"],
-        ["beef sirloin", "broccoli", "bell peppers", "onion", "garlic", "ginger", "soy sauce", "brown sugar", "sesame oil", "cornstarch", "rice vinegar", "salt", "black pepper"],
-        ["chocolate", "butter", "sugar", "eggs", "vanilla extract", "flour", "salt"],
-        ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
-        , ["eggplant", "flour", "eggs", "breadcrumbs", "marinara sauce", "mozzarella cheese", "parmesan cheese", "salt", "black pepper"]
-    ]
-
-        # Instantiate the RecipeRecommendation class
-        recipe_recommendation = RecipeRecommendation(recipes, recipe_cuisines, ingredients)
-
-        # Example usage:
-        favorite_recipe_indices = [recipes.index("Eggplant Parmesan"), recipes.index("Grilled Cheese Sandwich")]
-
-        self.stdout.write("Recommendations Based on Ingredient Similarity:")
-        similar_recipes_by_ingredients = recipe_recommendation.find_similar_recipes_by_ingredients(favorite_recipe_indices)
-        for recipe, similarity in similar_recipes_by_ingredients:
-            self.stdout.write(f"{recipe}: Similarity Score = {similarity:.4f}")
-
-        self.stdout.write("\nRecommendations Based on Cuisine Type Similarity:")
-        similar_recipes_by_cuisine = recipe_recommendation.find_similar_recipes_by_cuisine(favorite_recipe_indices)
-        for recipe, similarity in similar_recipes_by_cuisine:
-            self.stdout.write(f"{recipe}: Similarity Score = {similarity:.4f}")
+        self.stdout.write("Finding similar recipes...\n")
+        RecommendationSystem.recommend_similar_recipes(favorite_recipe)

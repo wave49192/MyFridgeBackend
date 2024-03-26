@@ -10,7 +10,7 @@ from rest_framework.decorators import api_view
 
 from RecommendationSystem.models import Recipe
 
-from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeSerializer
+from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeSerializer,IngredientSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -37,6 +37,13 @@ def getRecipe(request):
     recipes = Recipe.objects.all()
 
     serializer = RecipeSerializer(recipes,many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def getIngredients(request):
+    recipes = Recipe.objects.all()
+
+    serializer = IngredientSerializer(recipes,many=True)
     return Response(serializer.data)
 
 
