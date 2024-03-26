@@ -11,12 +11,12 @@ class RecommendationSystem:
     So I will find another way to improve the time complexity by using another algorithm.
     
     -----------UPDATE-------------
-    TF-IDF Vectorization then cosine similarity. works fine on single favourite recipe.
+    TF-IDF Vectorization then cosine similarity. works fine on many favourite recipe.
     -----------UPDATE-------------
     
     Algorithm tried:
     1 Nltk distance (The Levenshtein distance between two strings: more distance = less alike).
-    2 TF-IDF Vectorization then cosine similarity.
+    2 TF-IDF Vectorization then cosine similarity. (will use this one)
     """
     @staticmethod
     def recommend_similar_recipes(favorite_recipes):
