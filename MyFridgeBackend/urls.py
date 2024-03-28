@@ -17,25 +17,26 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from rest_framework import routers
+from Authentication.views import GoogleLoginApi
 from RecommendationSystem import views
 from Inventory.views import IngredientViewSet
 from IngredientDetection.views import detectIngredients
 
 router = routers.DefaultRouter()
-router.register(r'users', views.UserViewSet)
 router.register(r'groups', views.GroupViewSet)
 router.register(r'ingredients', IngredientViewSet)
 
 # Wire up our API using automatic URL routing.
 # Additionally, we include login URLs for the browsable API.
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    # path('admin/', admin.site.urls),
     path('', include(router.urls)), 
     path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     path('recipes/', views.getRecipe, name ='get_recipe'),
     path('ingredient/', views.getIngredients, name ='get_ingredient'),
     path('recipes/search/', views.searchRecipe, name='search_recipe'),
-    path('detect/', detectIngredients, name='Detect Ingredients')
+    path('detect/', detectIngredients, name='detect_ingredients'),
+    path("auth/login/google/", GoogleLoginApi.as_view(), name="login-with-google"),
 ]
 
 urlpatterns += router.urls
