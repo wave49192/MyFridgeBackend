@@ -39,6 +39,7 @@ urlpatterns = [
     path('recipes/search/', views.searchRecipe, name='search_recipe'),
     path('detect/', detectIngredients, name='detect_ingredients'),
     path("auth/", GoogleLoginApi.as_view(), name="login-with-google"),
+    path('recipes/details/', views.getRecipeDetails, name='get_details'),
 ]
 
 urlpatterns += router.urls

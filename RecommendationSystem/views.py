@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.contrib.auth.models import Group, User
-
+from django.shortcuts import get_object_or_404
 
 from rest_framework import permissions, viewsets
 from rest_framework.response import Response
@@ -51,5 +51,22 @@ def searchRecipe(request):
 
     # Serialize the filtered recipes using the serializer
     serializer = RecipeSerializer(recipes, many=True)
+    
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def getRecipeDetails(request):
+    # Get the recipe ID from the query parameters
+    recipe_id = request.GET.get('recipe_id', '')
+
+    # Check if recipe_id is provided
+    if not recipe_id:
+        return Response({'error': 'Please provide a recipe id'}, status=400)
+
+    # Retrieve the specific recipe object by its ID
+    recipe = get_object_or_404(Recipe, recipe_id=recipe_id)
+
+    # Serialize the recipe using the serializer
+    serializer = RecipeSerializer(recipe)
     
     return Response(serializer.data)
