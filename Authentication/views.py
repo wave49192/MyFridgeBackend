@@ -9,6 +9,7 @@ from .mixins import PublicApiMixin, ApiErrorsMixin
 from .utils import google_get_access_token, google_get_user_info
 from Authentication.models import User
 from Authentication.serializers import UserSerializer
+from rest_framework import viewsets
 
 
 def generate_tokens_for_user(user):
@@ -32,7 +33,7 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
         input_serializer.is_valid(raise_exception=True)
 
         validated_data = input_serializer.validated_data
-
+        
         code = validated_data.get('code')
         error = validated_data.get('error')
 
@@ -42,7 +43,7 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
             params = urlencode({'error': error})
             return redirect(f'{login_url}?{params}')
 
-        redirect_uri = f'{settings.BASE_FRONTEND_URL}/google/'
+        redirect_uri = f'{settings.BASE_BACKEND_URL}/'
         access_token = google_get_access_token(code=code, 
                                                redirect_uri=redirect_uri)
 
@@ -79,3 +80,10 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
                 'refresh_token': str(refresh_token)
             }
             return Response(response_data)
+        
+class UserViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint that allows groups to be viewed or edited.
+    """
+    queryset = User.objects.all()
+    serializer_class = UserSerializer

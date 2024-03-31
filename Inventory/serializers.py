@@ -10,8 +10,3 @@ class InventorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Inventory
         fields = ['ingredients', 'owned_by']
-        
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['name']
