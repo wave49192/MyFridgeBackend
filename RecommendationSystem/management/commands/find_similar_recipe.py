@@ -69,6 +69,9 @@ class RecommendationSystem:
         return recommended_recipes
 
 
+
+### py manage.py find_similar_recipe
+### run this for testing the recommendation function locally only
 class Command(BaseCommand):
     help = 'Recommend similar recipes based on a input recipe'
 
