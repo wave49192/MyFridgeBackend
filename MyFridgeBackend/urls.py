@@ -40,6 +40,7 @@ urlpatterns = [
     path('detect/', detectIngredients, name='detect_ingredients'),
     path("auth/", GoogleLoginApi.as_view(), name="login-with-google"),
     path('recipes/details/', views.getRecipeDetails, name='get_details'),
+    path('recommend-recipe/', views.recommend_recipe, name='recommend_recipe'),
 ]
 
 urlpatterns += router.urls

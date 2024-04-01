@@ -11,6 +11,9 @@ from rest_framework.decorators import api_view
 from RecommendationSystem.models import Recipe
 
 from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeSerializer,IngredientSerializer
+from .management.commands.find_similar_recipe import RecommendationSystem 
+
+
 
 class GroupViewSet(viewsets.ModelViewSet):
     """
@@ -70,3 +73,19 @@ def getRecipeDetails(request):
     serializer = RecipeSerializer(recipe)
     
     return Response(serializer.data)
+
+
+ # Assuming recommendation system logic is in recommendation_system.py
+
+@api_view(['POST'])
+def recommend_recipe(request):
+    if request.method == 'POST':
+        # Extract recipes from the request data
+        recipes = request.data.get('recipes', [])  # Assuming recipes are passed as a list of dictionaries in the POST request
+
+        # Call the recommendation system to recommend similar recipes
+        recommended_recipes = RecommendationSystem.recommend_similar_recipes(recipes)
+
+        # Return recommended recipes as JSON response
+        return Response(recommended_recipes)
+
