@@ -64,7 +64,7 @@ class RecommendationSystem:
             'image_url':recipe['image_url'],
             'cuisine_type': recipe['cuisine_type'],
             'cooking_time': recipe['cooking_time'],
-        } for recipe in sorted_recipes[:20]]
+        } for recipe in sorted_recipes[:21]]
         print(recommended_recipes)
         return recommended_recipes
 
