@@ -47,12 +47,13 @@ class RecommendationSystem:
         # Associate similarity scores with recipes
         recipe_similarity_scores = {recipes[i]['recipe_id']: similarity_scores[0][i] for i in range(len(recipes))}
         
-        # Exclude input recipes from recommendations by setting their scores to 0
+        # Exclude input recipes from recommendations by setting their scores to 0 (but if there is no recipe_id this will not run)
         for input_recipe in input_recipes:
-            recipe_id = input_recipe['recipe_id']
-            if recipe_id in recipe_similarity_scores:
-                recipe_similarity_scores[recipe_id] = 0
-
+            recipe_id = input_recipe.get('recipe_id')
+            if recipe_id:  # Check if 'recipe_id' exists
+                if recipe_id in recipe_similarity_scores:
+                    recipe_similarity_scores[recipe_id] = 0
+                    
         
         # Sort recipes based on similarity score
         sorted_recipes = sorted(recipes, key=lambda x: recipe_similarity_scores[x['recipe_id']], reverse=True)
@@ -63,7 +64,7 @@ class RecommendationSystem:
             'image_url':recipe['image_url'],
             'cuisine_type': recipe['cuisine_type'],
             'cooking_time': recipe['cooking_time'],
-        } for recipe in sorted_recipes[:5]]
+        } for recipe in sorted_recipes[:20]]
         print(recommended_recipes)
         return recommended_recipes
 
