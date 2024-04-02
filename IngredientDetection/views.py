@@ -20,4 +20,7 @@ def detectIngredients(request):
     
     detections = [names[int(c)] for r in results for c in r.boxes.cls]
     
-    return JsonResponse({"detections": detections})
+    # Remove duplicate detections
+    unique_detections = list(set(detections))
+    
+    return JsonResponse({"detections": unique_detections})
