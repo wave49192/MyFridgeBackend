@@ -19,12 +19,12 @@ from django.urls import include, path
 from rest_framework import routers
 from Authentication.views import GoogleLoginApi, UserViewSet
 from RecommendationSystem import views
-from Inventory.views import IngredientViewSet, InventoryViewSet
+from Inventory.views import IngredientViewSet, InventoryItemViewSet, InventoryViewSet
 from IngredientDetection.views import detectIngredients
 
 router = routers.DefaultRouter()
-router.register(r'groups', views.GroupViewSet)
 router.register(r'ingredients', IngredientViewSet)
+router.register(r'inventory_items', InventoryItemViewSet)
 router.register(r'inventory', InventoryViewSet)
 router.register(r'users', UserViewSet)
 

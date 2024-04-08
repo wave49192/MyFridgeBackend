@@ -25,6 +25,8 @@ BASE_FRONTEND_URL = env('DJANGO_BASE_FRONTEND_URL')
 BASE_BACKEND_URL = env('DJANGO_BASE_BACKEND_URL')
 GOOGLE_OAUTH2_CLIENT_ID = env('GOOGLE_OAUTH2_CLIENT_ID')
 GOOGLE_OAUTH2_CLIENT_SECRET = env('GOOGLE_OAUTH2_CLIENT_SECRET')
+AWS_ACCESS_KEY_ID= env('AWS_ACCESS_KEY_ID')
+SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
@@ -147,6 +149,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PARSER_CLASSES': [
+        'rest_framework.parsers.JSONParser',
+    ],
     'PAGE_SIZE': 10
 }
 
@@ -154,4 +159,5 @@ AUTH_USER_MODEL = 'Authentication.User'
 
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
+    'http://localhost:4173',
 ]

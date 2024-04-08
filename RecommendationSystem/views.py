@@ -10,19 +10,8 @@ from rest_framework.decorators import api_view
 
 from RecommendationSystem.models import Recipe
 
-from RecommendationSystem.serializers import GroupSerializer, UserSerializer,RecipeSerializer,IngredientSerializer
+from RecommendationSystem.serializers import RecipeSerializer,IngredientSerializer
 from .management.commands.find_similar_recipe import RecommendationSystem 
-
-
-
-class GroupViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint that allows groups to be viewed or edited.
-    """
-    queryset = Group.objects.all()
-    serializer_class = GroupSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
 
 
 @api_view(['GET'])
