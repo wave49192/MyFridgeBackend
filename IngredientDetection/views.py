@@ -10,6 +10,9 @@ import boto3
 from django.conf import settings
 import uuid
 
+from Inventory.models import Ingredient
+from Inventory.serializers import IngredientSerializer
+
 model = YOLO("IngredientDetection/yolo/best.pt")
 
 @api_view(['POST'])
@@ -31,8 +34,9 @@ def detectIngredients(request):
         detections = [names[int(c)] for r in results for c in r.boxes.cls]
         
         # Remove duplicate detections
-        unique_detections = list(set(detections))
+        unique_detections = list(map(lambda x: x.lower(), set(detections)))
+        ingredients = Ingredient.objects.filter(name__in=unique_detections)
         
-        return JsonResponse({"detections": unique_detections})
+        return JsonResponse({"detections": list(ingredients.values())})
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=415)

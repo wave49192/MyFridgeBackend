@@ -42,20 +42,23 @@
             "parmesan",
             "italian seasoning",
             "thyme",
-            "bell pepper"
+            "bell pepper",
+            "green bell pepper",
+            "orange bell pepper",
+            "red bell pepper",
+            "yellow bell pepper"
         ]
     },
     {
         "group_name": "Vegetables & Greens",
         "icon": "vegetables.png",
         "ingredients": [
-            "garlic",
-            "onion",
             "bell pepper",
-            "carrot",
-            "scallion",
-            "tomato",
-            "potato",
+            "green bell pepper",
+            "orange bell pepper",
+            "red bell pepper",
+            "yellow bell pepper",
+            "scallions",
             "red onion",
             "celery",
             "jalapeno",
@@ -66,12 +69,15 @@
             "cucumber",
             "spinach",
             "sweet corn",
+            "corn",
             "chile pepper",
             "sweet potato",
             "broccoli",
             "baby greens",
             "pumpkin",
             "cabbage",
+            "green cabbage",
+            "purple cabbage",
             "cauliflower",
             "asparagus",
             "arugula",
@@ -82,7 +88,7 @@
             "butternut squash",
             "romaine",
             "beetroot",
-            "brussels sprout",
+            "brussel sprout",
             "fennel",
             "sun dried tomato",
             "radish",
@@ -148,7 +154,8 @@
             "potato flakes",
             "pea shoots",
             "golden beet",
-            "banana pepper"
+            "banana pepper",
+            "bokchoy"
         ]
     },
     {
@@ -166,7 +173,7 @@
             "enoki mushroom",
             "black fungus",
             "black truffle",
-            "morel mushrooms",
+            "morel",
             "field mushroom",
             "king oyster mushroom",
             "straw mushroom",
@@ -190,7 +197,8 @@
             "lobster mushroom",
             "caesar's mushroom",
             "candy cap mushrooms",
-            "lion\u2019s mane mushroom"
+            "lion\u2019s mane mushroom",
+            "eryngii mushroom"
         ]
     },
     {
@@ -296,7 +304,8 @@
             "pluot",
             "soursop",
             "bergamot orange",
-            "hog plum"
+            "hog plum",
+            "green apple"
         ]
     },
     {
@@ -403,9 +412,7 @@
         "group_name": "Cheeses",
         "icon": "cheese.png",
         "ingredients": [
-            "parmesan",
             "cream cheese",
-            "cheddar",
             "mozzarella",
             "feta",
             "ricotta",
@@ -509,9 +516,6 @@
         "group_name": "Dairy & Eggs",
         "icon": "dairy_no_cheese.png",
         "ingredients": [
-            "butter",
-            "egg",
-            "milk",
             "heavy cream",
             "sour cream",
             "buttermilk",
@@ -816,7 +820,6 @@
         "group_name": "Poultry",
         "icon": "game_and_fowl.png",
         "ingredients": [
-            "chicken breast",
             "cooked chicken",
             "chicken thighs",
             "ground turkey",
@@ -1078,25 +1081,17 @@
         "group_name": "Herbs & Spices",
         "icon": "spices.png",
         "ingredients": [
-            "cinnamon",
-            "parsley",
+            "ginger",
+            "thai green chili",
             "cilantro",
-            "cumin",
-            "basil",
-            "thyme",
             "ginger root",
-            "garlic powder",
-            "oregano",
             "nutmeg",
             "chili flake",
-            "chili powder",
-            "paprika",
             "cayenne",
             "rosemary",
             "bay leaf",
             "turmeric",
             "clove",
-            "onion powder",
             "ginger powder",
             "dill",
             "chive",
@@ -1109,6 +1104,7 @@
             "coriander",
             "allspice",
             "cracked pepper",
+            "chili",
             "peppercorn",
             "mustard powder",
             "white pepper",
@@ -1184,10 +1180,7 @@
         "group_name": "Sugar & Sweeteners",
         "icon": "sugar_and_sweeteners.png",
         "ingredients": [
-            "sugar",
-            "brown sugar",
             "confectioners\u2019 sugar",
-            "honey",
             "maple syrup",
             "corn syrup",
             "coconut sugar",
@@ -1290,7 +1283,6 @@
         "group_name": "Seasonings & Spice Blends",
         "icon": "seasonings.png",
         "ingredients": [
-            "italian seasoning",
             "seasoned salt",
             "curry",
             "garam masala",
@@ -1396,10 +1388,6 @@
         "group_name": "Baking",
         "icon": "baking_flours.png",
         "ingredients": [
-            "flour",
-            "vanilla",
-            "baking powder",
-            "baking soda",
             "cornstarch",
             "yeast",
             "dark chocolate chips",
@@ -1554,7 +1542,6 @@
         "icon": "porridge.png",
         "ingredients": [
             "rolled oats",
-            "rice",
             "basmati rice",
             "quinoa",
             "brown rice",
@@ -1734,7 +1721,6 @@
         "icon": "past.png",
         "ingredients": [
             "short-cut pasta",
-            "spaghetti",
             "macaroni",
             "egg noodle",
             "spiral pasta",
@@ -1832,7 +1818,6 @@
         "group_name": "Bread & Salty Snacks",
         "icon": "sandwiches.png",
         "ingredients": [
-            "bread",
             "bread crumbs",
             "panko",
             "flour tortillas",
@@ -1938,8 +1923,6 @@
         "group_name": "Oils & Fats",
         "icon": "oils.png",
         "ingredients": [
-            "olive oil",
-            "vegetable oil",
             "extra virgin olive oil",
             "canola oil",
             "coconut oil",
@@ -2015,7 +1998,6 @@
         "group_name": "Dressings & Vinegars",
         "icon": "salads.png",
         "ingredients": [
-            "mayonnaise",
             "apple cider vinegar",
             "balsamic vinegar",
             "vinegar",
@@ -2094,12 +2076,9 @@
         "group_name": "Condiments",
         "icon": "condiments.png",
         "ingredients": [
-            "soy sauce",
             "dijon mustard",
             "worcestershire",
             "hot sauce",
-            "ketchup",
-            "mustard",
             "fish sauce",
             "bbq sauce",
             "sriracha",
@@ -2307,7 +2286,6 @@
         "icon": "sauces.png",
         "ingredients": [
             "tomato paste",
-            "peanut butter",
             "tomato sauce",
             "salsa",
             "tahini",

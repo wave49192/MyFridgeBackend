@@ -52,9 +52,13 @@ class InventoryViewSet(viewsets.ModelViewSet):
         try:
             for item in request.data.get('ingredients'):
                 ingredient, quantity, unit = item.values()
-                inventory_item = InventoryItem.objects.create(ingredient_id=ingredient, quantity=quantity, unit=unit)
-                inventory.items.add(inventory_item)
-                inventory.save()
+                existing_item = InventoryItem.objects.filter(ingredient=ingredient)
+                if (existing_item):
+                    existing_item.update(quantity=quantity, unit=unit)
+                else:
+                    inventory_item = InventoryItem.objects.create(ingredient_id=ingredient, quantity=quantity, unit=unit)
+                    inventory.items.add(inventory_item)
+                    inventory.save()
             serializer = self.serializer_class(inventory)
             return Response(serializer.data, status=201)
         except Exception as e:
