@@ -5,6 +5,8 @@ from django.conf import settings
 from django.shortcuts import redirect
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.response import Response
+
+from Inventory.models import Inventory
 from .mixins import PublicApiMixin, ApiErrorsMixin
 from .utils import google_get_access_token, google_get_user_info
 from Authentication.models import User
@@ -70,6 +72,10 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
                 first_name=first_name,
                 last_name=last_name,
                 registration_method='google'
+            )
+            
+            Inventory.objects.create(
+                owned_by=user.id
             )
          
             access_token, refresh_token = generate_tokens_for_user(user)
