@@ -33,19 +33,35 @@ class RecommendationSystem:
             for recipe in recipes_queryset
         ]
         
+        
         # Extracting input ingredients and ingredients for each recipe
+        
         input_ingredients = [ingredient.strip() for input_recipe in input_recipes for ingredient in input_recipe['cleaned_ingredients'].split(',')]
         recipe_ingredients = [recipe['cleaned_ingredients'] for recipe in recipes]
         
         # Create TF-IDF vectors
-        tfidf_vectorizer = TfidfVectorizer()
-        tfidf_matrix = tfidf_vectorizer.fit_transform(recipe_ingredients + [' '.join(input_ingredients)])
+        corpus = recipe_ingredients + [', '.join(input_ingredients)]
+        print("all ingredients",corpus)
         
+        tfidf_vectorizer = TfidfVectorizer()
+        tfidf_matrix = tfidf_vectorizer.fit_transform(corpus)
+        
+        feature_names = tfidf_vectorizer.get_feature_names_out()
+        
+        #all feature in the data
+        print("feature name",feature_names)
+        
+        tfidf_matrix_input = tfidf_matrix[-1]
+        tfidf_matrix_recipes = tfidf_matrix[:-1]
+
         # Calculate cosine similarity between user's input ingredients and recipes
-        similarity_scores = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[:-1])
+        # it will return the list of similarities score of the input compare to all recipes.[recipe1,recipe2,etc...]
+        similarity_scores = cosine_similarity(tfidf_matrix_input,tfidf_matrix_recipes)
+        
         
         # Associate similarity scores with recipes
         recipe_similarity_scores = {recipes[i]['recipe_id']: similarity_scores[0][i] for i in range(len(recipes))}
+        print("similarity score",recipe_similarity_scores)
         
         # Exclude input recipes from recommendations by setting their scores to 0 (but if there is no recipe_id this will not run)
         for input_recipe in input_recipes:
@@ -64,8 +80,8 @@ class RecommendationSystem:
             'image_url':recipe['image_url'],
             'cuisine_type': recipe['cuisine_type'],
             'cooking_time': recipe['cooking_time'],
-        } for recipe in sorted_recipes[:24]]
-        print(recommended_recipes)
+        } for recipe in sorted_recipes[:48]]
+        # print(recommended_recipes)
         return recommended_recipes
 
 
@@ -80,12 +96,12 @@ class Command(BaseCommand):
     {
         "recipe_id": "5ed6604591c37cdc054bca02",
         "title": "Crusty cheddar pies",
-        "cleaned_ingredients": "slim young leeks thickly sliced, broccoli cut into small florets, celery sticks de-stringed and sliced, floury potatoes such as king edward cut into even-sized chunks, butter, pot 0% fat greek yogurt, ml semi-skimmed milk, plain flour, english mustard, wholegrain mustard, pack mature cheddar finely grated, None  Handful frozen peas"
+        "cleaned_ingredients": "bread mix"
     }
             ,      {
         "recipe_id": "5ed6604591c37cdc054bcaa7",
         "title": "Cucumber and Feta Rolls",
-        "cleaned_ingredients": "crumbled feta crumbled, greek yogurt, sundried tomatoes chopped, kalamata olives chopped, roasted red peppers chopped, oregano or dill chopped, lemon juice, None  Pepper to taste, cucumbers sliced thinly lengthwise"
+        "cleaned_ingredients": "potatoes"
     },
         ]
 

@@ -7,6 +7,7 @@ from rest_framework import permissions, viewsets
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
+import random
 
 from RecommendationSystem.models import Recipe
 
@@ -74,7 +75,9 @@ def recommend_recipe(request):
 
         # Call the recommendation system to recommend similar recipes
         recommended_recipes = RecommendationSystem.recommend_similar_recipes(recipes)
+        
+        # Shuffle the recommended recipes
+        random.shuffle(recommended_recipes)
 
-        # Return recommended recipes as JSON response
+        # Return shuffled recommended recipes as JSON response
         return Response(recommended_recipes)
-
