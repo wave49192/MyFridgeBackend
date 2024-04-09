@@ -74,9 +74,11 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
                 registration_method='google'
             )
             
-            Inventory.objects.create(
-                owned_by=user.id
+            inventory = Inventory.objects.create(
+                owned_by=user
             )
+            
+            print(inventory)
          
             access_token, refresh_token = generate_tokens_for_user(user)
             response_data = {
