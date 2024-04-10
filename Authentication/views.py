@@ -1,4 +1,5 @@
 from urllib.parse import urlencode
+from django.http import JsonResponse
 from rest_framework import serializers
 from rest_framework.views import APIView
 from django.conf import settings
@@ -7,11 +8,14 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework.response import Response
 
 from Inventory.models import Inventory
+from RecommendationSystem.models import Recipe
+from RecommendationSystem.serializers import RecipeSerializer
 from .mixins import PublicApiMixin, ApiErrorsMixin
 from .utils import google_get_access_token, google_get_user_info
 from Authentication.models import User
-from Authentication.serializers import UserSerializer
+from Authentication.serializers import UserFavoriteRecipesSerializer, UserSerializer
 from rest_framework import viewsets
+from rest_framework.decorators import action
 
 
 def generate_tokens_for_user(user):
@@ -77,9 +81,7 @@ class GoogleLoginApi(PublicApiMixin, ApiErrorsMixin, APIView):
             inventory = Inventory.objects.create(
                 owned_by=user
             )
-            
-            print(inventory)
-         
+                     
             access_token, refresh_token = generate_tokens_for_user(user)
             response_data = {
                 'user': UserSerializer(user).data,
@@ -95,3 +97,34 @@ class UserViewSet(viewsets.ModelViewSet):
     """
     queryset = User.objects.all()
     serializer_class = UserSerializer
+    
+    @action(detail=True, methods=['post', 'get', 'delete'], url_path='favourites')
+    def favourites(self, request, pk):
+        if request.method == 'POST':
+            try:
+                user = self.get_object()
+                recipe = Recipe.objects.filter(recipe_id=request.data.get('recipe')['recipe_id']).first()
+            
+                user.favourite_recipes.add(recipe)
+                
+                return JsonResponse({'message': 'Recipe added to favorites successfully.'}, status=201)
+            except Exception as e:
+                return Response({'error': str(e)}, status=500)
+        if request.method == 'GET':
+            try:                
+                user = self.get_object()
+                serialized_recipe = UserFavoriteRecipesSerializer(user)
+                
+                return Response(serialized_recipe.data)
+            except Exception as e:
+                return Response({'error': str(e)}, status=500)
+        if request.method == 'DELETE':
+            try:
+                user = self.get_object()
+                recipe = recipe = Recipe.objects.filter(recipe_id=request.data.get('recipe')['recipe_id']).first()
+
+                user.favourite_recipes.remove(recipe)
+                
+                return JsonResponse({'message': 'Recipe removed to favorites successfully.'}, status=200)
+            except Exception as e:
+                return Response({'error': str(e)}, status=500)
