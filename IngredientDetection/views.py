@@ -24,6 +24,7 @@ def detectIngredients(request):
         image = np.frombuffer(image_bytes.read(), dtype=np.uint8)
         image = cv2.imdecode(image, cv2.IMREAD_COLOR)
         
+        image_bytes.seek(0)
         s3 = boto3.client('s3', aws_access_key_id=settings.AWS_ACCESS_KEY_ID, aws_secret_access_key=settings.SECRET_ACCESS_KEY)
         s3.upload_fileobj(image_bytes, 'my-fridge', f'{uuid.uuid4()}.{image_type}')
         
