@@ -13,7 +13,7 @@ import uuid
 from Inventory.models import Ingredient
 from Inventory.serializers import IngredientSerializer
 
-model = YOLO("IngredientDetection/yolo/best.pt")
+model = YOLO("IngredientDetection/yolo/best (10).pt")
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser])
@@ -25,8 +25,8 @@ def detectIngredients(request):
         image = cv2.imdecode(image, cv2.IMREAD_COLOR)
         
         image_bytes.seek(0)
-        s3 = boto3.client('s3', aws_access_key_id=settings.AWS_ACCESS_KEY_ID, aws_secret_access_key=settings.SECRET_ACCESS_KEY)
-        s3.upload_fileobj(image_bytes, 'my-fridge', f'{uuid.uuid4()}.{image_type}')
+        # s3 = boto3.client('s3', aws_access_key_id=settings.AWS_ACCESS_KEY_ID, aws_secret_access_key=settings.SECRET_ACCESS_KEY)
+        # s3.upload_fileobj(image_bytes, 'my-fridge', f'{uuid.uuid4()}.{image_type}')
         
         # Perform object detection with YOLOv8
         results = model.predict(image)
